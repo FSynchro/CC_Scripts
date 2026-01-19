@@ -19,15 +19,11 @@ local function scrubToNum(val)
     return 0
 end
 
--- Linear Mapping: Maps storage % to Rod Insertion %
--- 80% storage -> 100% rods
--- 20% storage -> 10% rods
 local function calculateRodTarget(storagePercent)
     if storagePercent >= 0.80 then return 100 end
-    if storagePercent <= 0.05 then return 0 end   -- Overdrive
+    if storagePercent <= 0.05 then return 0 end
     if storagePercent <= 0.20 then return 10 end
     
-    -- Linear math: (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
     local minS, maxS = 0.20, 0.80
     local minR, maxR = 10, 100
     return math.floor((storagePercent - minS) * (maxR - minR) / (maxS - minS) + minR)
@@ -37,7 +33,7 @@ local function getGridData()
     local data = {
         totalE = 0, totalM = 0,
         devices = {}, reactor = nil,
-        rodLevel = 0, rActive = false
+        rodLevel = 0, rActive = false, rProd = 0
     }
 
     for _, name in ipairs(peripheral.getNames()) do
@@ -50,6 +46,15 @@ local function getGridData()
             local s, level = pcall(p.getControlRodLevel, 0)
             data.rodLevel = s and scrubToNum(level) or 0
             data.rActive = p.getActive()
+            
+            -- Get Production Rate (RF/t)
+            local sP, vP = pcall(p.getEnergyStats)
+            if sP and type(vP) == "table" then
+                data.rProd = vP.energyProducedLastTick or 0
+            else
+                local sP2, vP2 = pcall(p.getEnergyProducedLastTick)
+                data.rProd = sP2 and vP2 or 0
+            end
         end
 
         local s1, v1 = pcall(p.getEnergyStored)
@@ -69,7 +74,6 @@ local function getGridData()
 
     data.percent = (data.totalM > 0) and (data.totalE / data.totalM) or 0
     
-    -- Flow & Overdrive logic
     if data.percent <= 0.05 and autoMode then
         energyFlow = "OVERDRIVE"
     else
@@ -125,13 +129,20 @@ local function drawUI(mon, data)
         mon.setTextColor(data.rActive and colors.green or colors.red)
         mon.write(data.rActive and "active" or "inactive")
 
+        -- New Production Display
+        mon.setCursorPos(2, 9)
+        mon.setTextColor(colors.white)
+        mon.write("Reactor Pr: ")
+        mon.setTextColor(colors.lightBlue)
+        mon.write(string.format("%.1f RF/t", data.rProd))
+
         -- Enable/Disable Buttons
-        mon.setCursorPos(2, 10)
+        mon.setCursorPos(2, 11)
         mon.setBackgroundColor(colors.green)
         mon.setTextColor(colors.black)
         mon.write(" [ ENABLE ] ")
         
-        mon.setCursorPos(15, 10)
+        mon.setCursorPos(15, 11)
         mon.setBackgroundColor(colors.red)
         mon.setTextColor(colors.white)
         mon.write(" [ DISABLE ] ")
@@ -140,7 +151,7 @@ local function drawUI(mon, data)
 
     -- Battery Side (Right)
     local bX, bW = w - 4, 3
-    mon.setCursorPos(bX - 4, 2) -- Moved 2 chars right as requested
+    mon.setCursorPos(bX - 4, 2)
     mon.setTextColor(colors.lightGray)
     mon.write("Storage %")
 
@@ -173,7 +184,7 @@ local function drawUI(mon, data)
             if data.rodLevel == 100 then rc = colors.yellow
             elseif data.rodLevel >= 90 then
                 rc = (i == 0) and colors.red or colors.yellow
-            elseif data.rodLevel == 0 then rc = colors.red -- Solid red in Overdrive
+            elseif data.rodLevel == 0 then rc = colors.red 
             end
             mon.setBackgroundColor(rc)
             mon.setCursorPos(rX+1, rY-i) mon.write(" ")
@@ -188,19 +199,14 @@ parallel.waitForAny(
     function() -- Monitor Touch
         while true do
             local _, _, x, y = os.pullEvent("monitor_touch")
-            -- Toggle Automanage
             if y == 5 then autoMode = not autoMode end
-            
-            -- Enable Button
-            if y == 10 and x < 14 then
+            if y == 11 and x < 14 then
                 local names = peripheral.getNames()
                 for _, n in ipairs(names) do
                     if n:find("BigReactors") then peripheral.call(n, "setActive", true) end
                 end
             end
-            
-            -- Disable Button
-            if y == 10 and x >= 14 then
+            if y == 11 and x >= 14 then
                 autoMode = false
                 local names = peripheral.getNames()
                 for _, n in ipairs(names) do
