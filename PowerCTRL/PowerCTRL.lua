@@ -19,6 +19,20 @@ local function scrubToNum(val)
     return 0
 end
 
+-- Linear Mapping: Maps storage % to Rod Insertion %
+-- 80% storage -> 100% rods
+-- 20% storage -> 10% rods
+local function calculateRodTarget(storagePercent)
+    if storagePercent >= 0.80 then return 100 end
+    if storagePercent <= 0.05 then return 0 end   -- Overdrive
+    if storagePercent <= 0.20 then return 10 end
+    
+    -- Linear math: (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
+    local minS, maxS = 0.20, 0.80
+    local minR, maxR = 10, 100
+    return math.floor((storagePercent - minS) * (maxR - minR) / (maxS - minS) + minR)
+end
+
 local function getGridData()
     local data = {
         totalE = 0, totalM = 0,
@@ -54,11 +68,18 @@ local function getGridData()
     end
 
     data.percent = (data.totalM > 0) and (data.totalE / data.totalM) or 0
-    local diff = data.totalE - lastTotalEnergy
-    if diff > 10 then energyFlow = "Charging"
-    elseif diff < -10 then energyFlow = "Discharging"
-    else energyFlow = "Stable" end
-    if data.totalE <= 0 then energyFlow = "Empty" end
+    
+    -- Flow & Overdrive logic
+    if data.percent <= 0.05 and autoMode then
+        energyFlow = "OVERDRIVE"
+    else
+        local diff = data.totalE - lastTotalEnergy
+        if diff > 10 then energyFlow = "Charging"
+        elseif diff < -10 then energyFlow = "Discharging"
+        else energyFlow = "Stable" end
+    end
+    
+    if data.totalE <= 0 and energyFlow ~= "OVERDRIVE" then energyFlow = "Empty" end
     lastTotalEnergy = data.totalE
 
     return data
@@ -72,7 +93,6 @@ local function drawUI(mon, data)
     mon.setBackgroundColor(colors.black)
     mon.clear()
 
-    -- Title: Energy Maintenance System
     mon.setTextScale(w < 40 and 0.5 or 1)
     mon.setCursorPos(2, 1)
     mon.setTextColor(colors.yellow)
@@ -82,7 +102,9 @@ local function drawUI(mon, data)
     mon.setCursorPos(2, 3)
     mon.setTextColor(colors.white)
     mon.write("Energy: ")
-    local col = (energyFlow == "Charging") and colors.green or (energyFlow == "Empty" and colors.red or colors.orange)
+    local col = colors.orange
+    if energyFlow == "Charging" then col = colors.green
+    elseif energyFlow == "OVERDRIVE" or energyFlow == "Empty" then col = colors.red end
     mon.setTextColor(col)
     mon.write(energyFlow)
 
@@ -103,17 +125,22 @@ local function drawUI(mon, data)
         mon.setTextColor(data.rActive and colors.green or colors.red)
         mon.write(data.rActive and "active" or "inactive")
 
-        -- Disable Button
+        -- Enable/Disable Buttons
         mon.setCursorPos(2, 10)
+        mon.setBackgroundColor(colors.green)
+        mon.setTextColor(colors.black)
+        mon.write(" [ ENABLE ] ")
+        
+        mon.setCursorPos(15, 10)
         mon.setBackgroundColor(colors.red)
         mon.setTextColor(colors.white)
-        mon.write(" [ DISABLE REACTOR ] ")
+        mon.write(" [ DISABLE ] ")
         mon.setBackgroundColor(colors.black)
     end
 
     -- Battery Side (Right)
     local bX, bW = w - 4, 3
-    mon.setCursorPos(bX - 6, 2)
+    mon.setCursorPos(bX - 4, 2) -- Moved 2 chars right as requested
     mon.setTextColor(colors.lightGray)
     mon.write("Storage %")
 
@@ -135,17 +162,18 @@ local function drawUI(mon, data)
         mon.write(string.rep(" ", bW-1))
     end
 
-    -- Taller Rod Graphic
+    -- Rod Graphic
     if data.reactor then
         local rX, rY = bX - 7, h - 2
         mon.setBackgroundColor(colors.black)
         mon.setTextColor(colors.gray)
         mon.setCursorPos(rX-1, rY-6) mon.write("RODS")
-        for i = 0, 4 do -- 5 blocks tall
+        for i = 0, 4 do
             local rc = colors.green
             if data.rodLevel == 100 then rc = colors.yellow
             elseif data.rodLevel >= 90 then
                 rc = (i == 0) and colors.red or colors.yellow
+            elseif data.rodLevel == 0 then rc = colors.red -- Solid red in Overdrive
             end
             mon.setBackgroundColor(rc)
             mon.setCursorPos(rX+1, rY-i) mon.write(" ")
@@ -162,14 +190,21 @@ parallel.waitForAny(
             local _, _, x, y = os.pullEvent("monitor_touch")
             -- Toggle Automanage
             if y == 5 then autoMode = not autoMode end
-            -- Disable Reactor Button
-            if y == 10 and x < 25 then
+            
+            -- Enable Button
+            if y == 10 and x < 14 then
+                local names = peripheral.getNames()
+                for _, n in ipairs(names) do
+                    if n:find("BigReactors") then peripheral.call(n, "setActive", true) end
+                end
+            end
+            
+            -- Disable Button
+            if y == 10 and x >= 14 then
                 autoMode = false
                 local names = peripheral.getNames()
                 for _, n in ipairs(names) do
-                    if n:find("BigReactors") then
-                        peripheral.call(n, "setActive", false)
-                    end
+                    if n:find("BigReactors") then peripheral.call(n, "setActive", false) end
                 end
             end
         end
@@ -178,9 +213,8 @@ parallel.waitForAny(
         while true do
             local data = getGridData()
             if data.reactor and autoMode then
-                if data.percent > 0.80 then data.reactor.setAllControlRodLevels(100)
-                elseif data.percent < 0.30 then data.reactor.setAllControlRodLevels(90)
-                else data.reactor.setAllControlRodLevels(50) end
+                local target = calculateRodTarget(data.percent)
+                data.reactor.setAllControlRodLevels(target)
             end
             for _, n in ipairs(peripheral.getNames()) do
                 if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), data) end
