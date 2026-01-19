@@ -1,126 +1,182 @@
-local preload = type(package) == "table" and type(package.preload) == "table" and package.preload or {}
-local require = require
+-- =================================================================
+-- CONFIGURATION & UTILS
+-- =================================================================
+local function scrubToNum(val)
+    if type(val) == "number" then return val end
+    if type(val) == "string" then
+        local cleaned = val:gsub("[^%d%.%-]", "")
+        return tonumber(cleaned) or 0
+    end
+    if type(val) == "table" then return val.amount or val.energy or 0 end
+    return 0
+end
 
-if type(require) ~= "function" then
-    local modules = {}
-    local loading = {}
-    require = function(id)
-        local module = loading[id]
-        if module ~= nil then
-            if module == modules then
-                error("loop or previous error loading module '" .. id .. "'", 2)
+local function calculateRodTarget(storagePercent)
+    if storagePercent >= 0.80 then return 100 end
+    if storagePercent <= 0.05 then return 0 end
+    if storagePercent <= 0.20 then return 10 end
+    local minS, maxS = 0.20, 0.80
+    local minR, maxR = 10, 100
+    return math.floor((storagePercent - minS) * (maxR - minR) / (maxS - minS) + minR)
+end
+
+-- =================================================================
+-- UI DRAWING (FOR CLIENT)
+-- =================================================================
+local function drawUI(mon, data)
+    local w, h = mon.getSize()
+    mon.setBackgroundColor(colors.black)
+    mon.clear()
+    mon.setTextScale(w < 40 and 0.5 or 1)
+
+    -- Header
+    mon.setCursorPos(2, 1)
+    mon.setTextColor(colors.yellow)
+    mon.write("Energy Maintenance System")
+
+    -- Energy Status
+    mon.setCursorPos(2, 3)
+    mon.setTextColor(colors.white)
+    mon.write("Energy: ")
+    local col = (data.flow == "Charging") and colors.green or (data.flow == "OVERDRIVE" and colors.red or colors.orange)
+    mon.setTextColor(col)
+    mon.write(data.flow or "Stable")
+
+    -- Automanage Toggle
+    mon.setCursorPos(2, 5)
+    mon.setTextColor(colors.white)
+    mon.write("Automanage CTRL Rods: ")
+    mon.setBackgroundColor(data.auto and colors.green or colors.red)
+    mon.write(data.auto and " [ ON ] " or " [ OFF ] ")
+    mon.setBackgroundColor(colors.black)
+
+    -- Reactor Info
+    mon.setCursorPos(2, 7)
+    mon.setTextColor(colors.white)
+    mon.write("Rod Insertion: " .. data.rods .. "%")
+    
+    mon.setCursorPos(2, 8)
+    mon.write("Reactor Status: ")
+    mon.setTextColor(data.active and colors.green or colors.red)
+    mon.write(data.active and "active" or "inactive")
+
+    mon.setCursorPos(2, 9)
+    mon.setTextColor(colors.white)
+    mon.write("Reactor Pr: ")
+    mon.setTextColor(colors.lightBlue)
+    mon.write(string.format("%.1f RF/t", data.prod or 0))
+
+    -- Buttons
+    mon.setCursorPos(2, 11)
+    mon.setBackgroundColor(colors.green)
+    mon.setTextColor(colors.black)
+    mon.write(" [ ENABLE ] ")
+    mon.setCursorPos(15, 11)
+    mon.setBackgroundColor(colors.red)
+    mon.setTextColor(colors.white)
+    mon.write(" [ DISABLE ] ")
+    mon.setBackgroundColor(colors.black)
+
+    -- Battery/Storage
+    local bX, bW = w - 4, 3
+    mon.setCursorPos(bX - 4, 2)
+    mon.setTextColor(colors.lightGray)
+    mon.write("Storage %")
+    
+    local fill = math.floor(data.percent * (h - 5))
+    mon.setBackgroundColor(colors.gray)
+    for y = 3, h-1 do
+        mon.setCursorPos(bX, y) mon.write(" ")
+        mon.setCursorPos(bX+bW, y) mon.write(" ")
+    end
+    mon.setBackgroundColor(colors.green)
+    for i = 0, fill do
+        mon.setCursorPos(bX+1, (h-1)-i)
+        mon.write(" ")
+    end
+end
+
+-- =================================================================
+-- MAIN LOGIC
+-- =================================================================
+term.clear()
+term.setCursorPos(1,1)
+print("--- EMS SYSTEM SETUP ---")
+print("1. Server (At Reactor)")
+print("2. Client (At Monitor)")
+write("Select Mode: ")
+local mode = read()
+write("Wireless Channel: ")
+local channel = tonumber(read())
+
+local modem = peripheral.find("modem") or error("No wireless modem found!")
+modem.open(channel)
+
+if mode == "1" then
+    -- SERVER MODE
+    local autoMode = true
+    local lastE = 0
+    print("Server running on channel " .. channel)
+    
+    while true do
+        local grid = {totalE = 0, totalM = 0, rProd = 0, rods = 0, active = false, reactor = nil}
+        for _, name in ipairs(peripheral.getNames()) do
+            local p = peripheral.wrap(name)
+            if name:find("BigReactors") then
+                grid.reactor = p
+                grid.rods = scrubToNum(p.getControlRodLevel(0))
+                grid.active = p.getActive()
+                local s, stats = pcall(p.getEnergyStats)
+                grid.rProd = s and stats.energyProducedLastTick or 0
             end
-            return module
-        end
-        loading[id] = modules
-        local loader = preload[id]
-        if loader then
-            module = loader(id)
-        else
-            error("cannot load '" .. id .. "'", 2)
-        end
-        if module == nil then
-            module = true
-        end
-        loading[id] = module
-        return module
-    end
-end
-
--- =================================================================
--- OBJECTS MODULE
--- =================================================================
-preload["objects"] = function(...)
-    local inflate = require "deflate".inflate_zlib
-    local sha1 = require "metis.crypto.sha1"
-    local band, bor, lshift, rshift = bit32.band, bit32.bor, bit32.lshift, bit32.rshift
-    local byte, format, sub = string.byte, string.format, string.sub
-
-    local types = {[0] = "none", "commit", "tree", "blob", "tag", nil, "ofs_delta", "ref_delta", "any", "max"}
-
-    local function get_type(obj)
-        return types[obj.ty] or "?"
-    end
-
-    local session_id = ("luagit-%08x"):format(math.random(0, 2 ^ 24))
-
-    local function yield()
-        os.queueEvent(session_id)
-        os.pullEvent(session_id)
-    end
-
-    local hash_fmt = ("%02x"):rep(20)
-
-    local function create_reader(data)
-        local expected_sum = format(hash_fmt, byte(data, -20, -1))
-        local actual_sum = sha1(data:sub(1, -21))
-        if expected_sum ~= actual_sum then
-            error(("checksum mismatch: expected %s, got %s"):format(expected_sum, actual_sum))
-        end
-
-        data = data:sub(1, -20)
-        local pos = 1
-
-        local function read_bytes(len)
-            if len <= 0 then error("len < 0", 2) end
-            if pos > #data then error("end of stream") end
-            local start = pos
-            pos = pos + len
-            local chunk = sub(data, start, pos - 1)
-            if #chunk ~= len then error("expected " .. len .. " bytes, got" .. #chunk) end
-            return chunk
-        end
-
-        local function read8()
-            if pos > #data then error("end of stream") end
-            local start = pos
-            pos = pos + 1
-            return byte(data, start)
-        end
-
-        return {
-            offset = function() return pos - 1 end,
-            read8 = read8,
-            read16 = function() return (read8() * (2 ^ 8)) + read8() end,
-            read32 = function()
-                return (read8() * (2 ^ 24)) + (read8() * (2 ^ 16)) + (read8() * (2 ^ 8)) + read8()
-            end,
-            read = read_bytes,
-            close = function()
-                if pos ~= #data + 1 then error(("%d of %d bytes remaining"):format(#data - pos + 1, #data)) end
+            local s1, v1 = pcall(p.getEnergyStored)
+            local s2, v2 = pcall(p.getEnergyCapacity)
+            if s1 and s2 then
+                grid.totalE = grid.totalE + scrubToNum(v1)
+                grid.totalM = grid.totalM + scrubToNum(v2)
             end
-        }
-    end
+        end
+        
+        local percent = (grid.totalM > 0) and (grid.totalE / grid.totalM) or 0
+        local flow = (percent <= 0.05 and autoMode) and "OVERDRIVE" or (grid.totalE > lastE and "Charging" or "Discharging")
+        lastE = grid.totalE
 
-    -- ... [Truncated for brevity, full logic follows pattern above] ...
-    -- Note: Minified scripts are often easier to replace with the source 
-    -- than to manually un-minify every single internal variable.
-end
+        if grid.reactor and autoMode then
+            grid.reactor.setAllControlRodLevels(calculateRodTarget(percent))
+        end
 
--- =================================================================
--- NETWORK MODULE
--- =================================================================
-preload["network"] = function(...)
-    local function pkt_line(data)
-        return ("%04x%s\n"):format(5 + #data, data)
-    end
+        -- Broadcast
+        modem.transmit(channel, channel, {
+            type="DATA", 
+            payload={percent=percent, prod=grid.rProd, active=grid.active, rods=grid.rods, auto=autoMode, flow=flow}
+        })
 
-    local function read_pkt_line(handle)
-        local len_str = handle.read(4)
-        if len_str == nil or len_str == "" then return nil end
-        local len = tonumber(len_str, 16)
-        if len == nil then
-            error(("read_pkt_line: cannot convert %q to a number"):format(len_str))
-        elseif len == 0 then
-            return false, len_str
-        else
-            return handle.read(len - 4), len_str
+        -- Listen for commands
+        local ev, sd, ch, rep, msg = os.pullEventTimeout("modem_message", 0.8)
+        if msg and msg.type == "CMD" then
+            if msg.cmd == "TOGGLE_AUTO" then autoMode = not autoMode
+            elseif msg.cmd == "ON" and grid.reactor then grid.reactor.setActive(true)
+            elseif msg.cmd == "OFF" and grid.reactor then 
+                autoMode = false
+                grid.reactor.setActive(false)
+            end
         end
     end
 
-    -- [HTTP and Fetch Logic]
-    -- ...
+else
+    -- CLIENT MODE
+    print("Client waiting for data on channel " .. channel)
+    while true do
+        local ev, sd, ch, rep, msg = os.pullEvent()
+        if ev == "modem_message" and msg.type == "DATA" then
+            for _, n in ipairs(peripheral.getNames()) do
+                if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), msg.payload) end
+            end
+        elseif ev == "monitor_touch" then
+            local _, _, x, y = ev, sd, ch, rep
+            if y == 5 then modem.transmit(channel, channel, {type="CMD", cmd="TOGGLE_AUTO"})
+            elseif y == 11 and x < 14 then modem.transmit(channel, channel, {type="CMD", cmd="ON"})
+            elseif y == 11 and x >= 14 then modem.transmit(channel, channel, {type="CMD", cmd="OFF"}) end
+        end
+    end
 end
-
--- Start the execution
-return preload["clone"](...)
