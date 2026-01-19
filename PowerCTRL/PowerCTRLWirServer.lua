@@ -1,9 +1,10 @@
 -- =================================================================
--- PowerCTRLWirServer.lua
+-- PowerCTRLWirServer.lua (Robust Version)
 -- =================================================================
 print("--- EMS SERVER SETUP ---")
 write("Wireless Channel: ")
-local channel = tonumber(read())
+local input = read()
+local channel = tonumber(input) or 55
 
 local modem = peripheral.find("modem") or error("No wireless modem found!")
 modem.open(channel)
@@ -31,44 +32,61 @@ local function calculateRodTarget(storagePercent)
     return math.floor((storagePercent - minS) * (maxR - minR) / (maxS - minS) + minR)
 end
 
+-- Custom Timeout function to replace pullEventTimeout
+local function pullEventWithTimeout(timeout)
+    local timer = os.startTimer(timeout)
+    while true do
+        local event = {os.pullEvent()}
+        if event[1] == "modem_message" then
+            return table.unpack(event)
+        elseif event[1] == "timer" and event[2] == timer then
+            return nil
+        end
+    end
+end
+
 local function getGridData()
     local data = { totalE = 0, totalM = 0, devices = {}, reactor = nil, rodLevel = 0, rActive = false, rProd = 0 }
-    for _, name in ipairs(peripheral.getNames()) do
+    local names = peripheral.getNames()
+    
+    for _, name in ipairs(names) do
         local p = peripheral.wrap(name)
-        if name:find("BigReactors") then
-            data.reactor = p
-            data.rodLevel = scrubToNum(p.getControlRodLevel(0))
-            data.rActive = p.getActive()
-            local sP, vP = pcall(p.getEnergyStats)
-            data.rProd = (sP and type(vP) == "table") and vP.energyProducedLastTick or 0
-        end
-        local s1, v1 = pcall(p.getEnergyStored)
-        local s2, v2 = pcall(p.getEnergyCapacity)
-        if s1 and s2 then
-            data.totalE = data.totalE + scrubToNum(v1)
-            data.totalM = data.totalM + scrubToNum(v2)
-            table.insert(data.devices, name)
+        if p then
+            if name:find("BigReactors") then
+                data.reactor = p
+                local sR, vR = pcall(p.getControlRodLevel, 0)
+                data.rodLevel = sR and scrubToNum(vR) or 0
+                data.rActive = p.getActive()
+                local sP, vP = pcall(p.getEnergyStats)
+                data.rProd = (sP and type(vP) == "table") and scrubToNum(vP.energyProducedLastTick) or 0
+            end
+            
+            local s1, v1 = pcall(p.getEnergyStored)
+            local s2, v2 = pcall(p.getEnergyCapacity)
+            if s1 and s2 then
+                data.totalE = data.totalE + scrubToNum(v1)
+                data.totalM = data.totalM + scrubToNum(v2)
+                table.insert(data.devices, name)
+            end
         end
     end
     data.percent = (data.totalM > 0) and (data.totalE / data.totalM) or 0
     return data
 end
 
-print("Server Online. Listening/Broadcasting...")
+print("Server Online. Operating on channel: " .. channel)
 
 while true do
     local data = getGridData()
     
-    -- Energy Flow & Overdrive Logic
     local energyFlow = (data.percent <= 0.05 and autoMode) and "OVERDRIVE" or (data.totalE > lastTotalEnergy and "Charging" or "Discharging")
+    if data.totalE == lastTotalEnergy then energyFlow = "Stable" end
     lastTotalEnergy = data.totalE
 
-    -- Apply Auto-Control
     if data.reactor and autoMode then
-        data.reactor.setAllControlRodLevels(calculateRodTarget(data.percent))
+        pcall(data.reactor.setAllControlRodLevels, calculateRodTarget(data.percent))
     end
 
-    -- Broadcast to Clients
     modem.transmit(channel, channel, {
         type = "DATA",
         payload = {
@@ -81,8 +99,8 @@ while true do
         }
     })
 
-    -- Listen for incoming Commands from Client
-    local event, side, ch, reply, msg = os.pullEventTimeout("modem_message", 0.8)
+    -- Safe Message Handling
+    local event, side, ch, reply, msg = pullEventWithTimeout(0.8)
     if msg and type(msg) == "table" and msg.type == "CMD" then
         if msg.cmd == "TOGGLE_AUTO" then autoMode = not autoMode
         elseif msg.cmd == "ON" and data.reactor then data.reactor.setActive(true)
