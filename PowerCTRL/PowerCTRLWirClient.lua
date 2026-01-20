@@ -13,7 +13,6 @@ modem.open(channel)
 
 local lastData = nil
 
--- UI RENDERING (Your Original Logic)
 local function drawUI(mon, data)
     if not data then
         mon.clear()
@@ -27,8 +26,10 @@ local function drawUI(mon, data)
     mon.clear()
 
     mon.setTextScale(w < 40 and 0.5 or 1)
-    mon.setCursorPos(2, 1)
+    
+    -- Left Info Panel
     mon.setTextColor(colors.yellow)
+    mon.setCursorPos(2, 1)
     mon.write("Energy Maintenance System")
 
     mon.setCursorPos(2, 3)
@@ -47,9 +48,11 @@ local function drawUI(mon, data)
     mon.write(data.auto and " [ ON ] " or " [ OFF ] ")
     mon.setBackgroundColor(colors.black)
 
+    -- Rod Text with AutoManaged tag
     mon.setCursorPos(2, 7)
     mon.setTextColor(colors.white)
-    mon.write("Rod Insertion: " .. data.rods .. "%")
+    local rodTag = data.auto and " [AutoManaged]" or ""
+    mon.write("Rod Insertion: " .. data.rods .. "%" .. rodTag)
     
     mon.setCursorPos(2, 8)
     mon.write("Reactor Status: ")
@@ -58,10 +61,9 @@ local function drawUI(mon, data)
 
     mon.setCursorPos(2, 9)
     mon.setTextColor(colors.white)
-    mon.write("Reactor Pr: ")
-    mon.setTextColor(colors.lightBlue)
-    mon.write(string.format("%.1f RF/t", data.prod))
+    mon.write("Reactor Pr: " .. string.format("%.1f RF/t", data.prod))
 
+    -- Buttons
     mon.setCursorPos(2, 11)
     mon.setBackgroundColor(colors.green)
     mon.setTextColor(colors.black)
@@ -73,29 +75,57 @@ local function drawUI(mon, data)
     mon.write(" [ DISABLE ] ")
     mon.setBackgroundColor(colors.black)
 
-    -- Right Side Battery
-    local bX, bW = w - 4, 3
-    mon.setCursorPos(bX - 4, 2)
-    mon.setTextColor(colors.lightGray)
-    mon.write("Storage %")
-
-    local bH = h - 3
-    local fill = math.floor(data.percent * (bH - 2))
+    -------------------------------------------------------
+    -- DYNAMIC BARS (Right Side)
+    -------------------------------------------------------
+    local barH = h - 4
+    local startY = 3
+    
+    -- 1. BATTERY (Far Right)
+    local bX = w - 4
+    local bPercent = data.percent
+    local bFill = math.floor(bPercent * barH)
+    
+    -- Draw Battery Background (Gray)
     mon.setBackgroundColor(colors.gray)
-    for y = 3, h-1 do
-        mon.setCursorPos(bX, y) mon.write(" ")
-        mon.setCursorPos(bX+bW, y) mon.write(" ")
+    for y = startY, startY + barH - 1 do
+        mon.setCursorPos(bX, y) mon.write("   ")
     end
-    for x = bX, bX+bW do
-        mon.setCursorPos(x, 3) mon.write(" ")
-        mon.setCursorPos(x, h-1) mon.write(" ")
-    end
-
+    -- Draw Battery Fill (Green)
     mon.setBackgroundColor(colors.green)
-    for i = 0, fill - 1 do
-        mon.setCursorPos(bX+1, (h-2)-i)
-        mon.write(string.rep(" ", bW-1))
+    for y = 0, bFill - 1 do
+        mon.setCursorPos(bX, (startY + barH - 1) - y)
+        mon.write("   ")
     end
+    -- Draw Battery % inside
+    mon.setCursorPos(bX, startY + (barH / 2))
+    mon.setTextColor(colors.white)
+    mon.setBackgroundColor(bPercent > 0.5 and colors.green or colors.gray)
+    mon.write(math.floor(bPercent * 100))
+
+    -- 2. CONTROL RODS (To the left of Battery)
+    local rX = w - 9
+    local rPercent = data.rods / 100
+    local rFill = math.floor(rPercent * barH)
+
+    -- Draw Rod Background (Yellow)
+    mon.setBackgroundColor(colors.yellow)
+    for y = startY, startY + barH - 1 do
+        mon.setCursorPos(rX, y) mon.write("   ")
+    end
+    -- Draw Rod Fill (Black - filling from TOP down)
+    mon.setBackgroundColor(colors.black)
+    for y = 0, rFill - 1 do
+        mon.setCursorPos(rX, startY + y)
+        mon.write("   ")
+    end
+    -- Draw Rod % inside
+    mon.setCursorPos(rX, startY + (barH / 2))
+    mon.setTextColor(colors.white)
+    mon.setBackgroundColor(rPercent > 0.5 and colors.black or colors.yellow)
+    mon.write(data.rods)
+
+    mon.setBackgroundColor(colors.black)
 end
 
 local function sendCmd(c)
@@ -106,14 +136,12 @@ end
 while true do
     local ev, side, x, y, msg = os.pullEvent()
     
-    -- Handle Data from Server
     if ev == "modem_message" and msg and msg.type == "DATA" then
         lastData = msg
         for _, n in ipairs(peripheral.getNames()) do
             if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), lastData) end
         end
     
-    -- Handle Clicks (Immediate UI change for reactivity)
     elseif ev == "monitor_touch" and lastData then
         if y == 5 then
             lastData.auto = not lastData.auto
@@ -124,11 +152,11 @@ while true do
                 sendCmd("ON")
             else
                 lastData.active = false
-                lastData.auto = false -- Disable auto if manually turned off
+                lastData.auto = false
                 sendCmd("OFF")
             end
         end
-        -- Redraw immediately with predicted state
+        -- Immediate redraw for reactivity
         for _, n in ipairs(peripheral.getNames()) do
             if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), lastData) end
         end
