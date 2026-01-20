@@ -1,99 +1,110 @@
 -- =================================================================
--- PowerCTRLWirRemote.lua (Optimized Edition)
+-- PowerCTRLWirServer.lua (Optimized Edition)
 -- =================================================================
-local monitor = peripheral.find("monitor") or term
-local channel = 48 -- Set this to match your Server channel
+term.clear()
+term.setCursorPos(1,1)
+print("--- EMS SERVER SETUP ---")
+write("Wireless Channel: ")
+local channel = tonumber(read()) or 48
 
-local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
-if not modem then error("No Wireless Modem found!") end
-modem.open(channel)
-
-local lastData = nil
-local serverTimeout = 12 -- Wait up to 12s since server updates every 5s
-
-local function drawUI(data)
-    monitor.setBackgroundColor(colors.black)
-    monitor.clear()
-    monitor.setTextScale(1)
-    
-    if not data then
-        monitor.setCursorPos(2, 2)
-        monitor.setTextColor(colors.red)
-        monitor.write("WAITING FOR SERVER...")
-        return
+local wirelessModem
+for _, name in ipairs(peripheral.getNames()) do
+    local p = peripheral.wrap(name)
+    if peripheral.getType(name) == "modem" and p.isWireless() then 
+        wirelessModem = p 
     end
-
-    -- Title
-    monitor.setCursorPos(1, 1)
-    monitor.setTextColor(colors.yellow)
-    monitor.write(" REACTOR CONTROL SYSTEM ")
-    
-    -- Energy Bar
-    local width, height = monitor.getSize()
-    local barWidth = width - 4
-    local filled = math.floor(barWidth * data.percent)
-    
-    monitor.setCursorPos(2, 3)
-    monitor.setTextColor(colors.white)
-    monitor.write("Storage: " .. math.floor(data.percent * 100) .. "%")
-    
-    monitor.setCursorPos(2, 4)
-    monitor.setBackgroundColor(colors.gray)
-    monitor.write(string.rep(" ", barWidth))
-    monitor.setCursorPos(2, 4)
-    monitor.setBackgroundColor(data.percent > 0.2 and colors.green or colors.red)
-    monitor.write(string.rep(" ", filled))
-    monitor.setBackgroundColor(colors.black)
-
-    -- Stats
-    monitor.setCursorPos(2, 6)
-    monitor.setTextColor(colors.cyan)
-    monitor.write("Flow:   " .. data.flow)
-    
-    monitor.setCursorPos(2, 7)
-    monitor.write("Output: " .. math.floor(data.prod) .. " RF/t")
-    
-    monitor.setCursorPos(2, 8)
-    monitor.write("Rods:   " .. data.rods .. "%")
-
-    -- Buttons (Visual Only)
-    monitor.setCursorPos(2, 10)
-    monitor.setBackgroundColor(data.auto and colors.blue or colors.lightGray)
-    monitor.write(" [AUTO] ")
-    
-    monitor.setCursorPos(12, 10)
-    monitor.setBackgroundColor(data.active and colors.green or colors.red)
-    monitor.write(data.active and " [ON] " or " [OFF] ")
-    monitor.setBackgroundColor(colors.black)
 end
 
-local function sendCmd(command)
-    modem.transmit(channel, channel, {type = "CMD", cmd = command})
+if not wirelessModem then error("Wireless Modem NOT found!") end
+wirelessModem.open(channel)
+
+local autoMode = true
+local lastTotalEnergy = 0
+local energyFlow = "Stable"
+local updateInterval = 5 -- 5 second refresh rate
+
+local function scrubToNum(val)
+    if type(val) == "number" then return val end
+    if type(val) == "string" then
+        local cleaned = val:gsub("[^%d%.%-]", "")
+        return tonumber(cleaned) or 0
+    end
+    if type(val) == "table" then return val.amount or val.energy or 0 end
+    return 0
 end
 
--- Main Loop
-drawUI(nil)
+local function calculateRodTarget(storagePercent)
+    if storagePercent >= 0.80 then return 100 end
+    if storagePercent <= 0.05 then return 0 end
+    if storagePercent <= 0.20 then return 10 end
+    local minS, maxS = 0.20, 0.80
+    local minR, maxR = 10, 100
+    return math.floor((storagePercent - minS) * (maxR - minR) / (maxS - minS) + minR)
+end
 
 while true do
-    local timer = os.startTimer(serverTimeout)
-    local ev, side, ch, rep, msg, dist = os.pullEvent()
+    local data = { totalE = 0, totalM = 0, rodLevel = 0, rActive = false, rProd = 0 }
+    local reactor = nil
 
-    if ev == "modem_message" and msg and msg.type == "DATA" then
-        lastData = msg
-        drawUI(msg)
-    elseif ev == "timer" and side == timer then
-        -- Server hasn't checked in for 12 seconds
-        lastData = nil
-        drawUI(nil)
-    elseif ev == "monitor_touch" or ev == "mouse_click" then
-        local x, y = side, ch -- Re-mapping vars based on event
-        -- Simple Button Logic (Approximate positions)
-        if y == 10 then
-            if x >= 2 and x <= 9 then
-                sendCmd("TOGGLE_AUTO")
-            elseif x >= 12 and x <= 18 then
-                if lastData and lastData.active then sendCmd("OFF") else sendCmd("ON") end
+    for _, name in ipairs(peripheral.getNames()) do
+        local p = peripheral.wrap(name)
+        if name:find("BigReactors") then
+            reactor = p
+            data.rActive = p.getActive()
+            data.rodLevel = scrubToNum(p.getControlRodLevel(0))
+            local sP, vP = pcall(p.getEnergyStats)
+            data.rProd = (sP and type(vP) == "table") and (vP.energyProducedLastTick or 0) or 0
+        end
+
+        local s1, v1 = pcall(p.getEnergyStored)
+        local s2, v2 = pcall(p.getEnergyCapacity)
+        if s1 and s2 then
+            data.totalE = data.totalE + scrubToNum(v1)
+            data.totalM = data.totalM + scrubToNum(v2)
+        end
+    end
+
+    local percent = (data.totalM > 0) and (data.totalE / data.totalM) or 0
+    
+    if percent <= 0.05 and autoMode then
+        energyFlow = "OVERDRIVE"
+    else
+        local diff = data.totalE - lastTotalEnergy
+        if diff > 10 then energyFlow = "Charging"
+        elseif diff < -10 then energyFlow = "Discharging"
+        else energyFlow = "Stable" end
+    end
+    if data.totalE <= 0 and energyFlow ~= "OVERDRIVE" then energyFlow = "Empty" end
+    lastTotalEnergy = data.totalE
+
+    if reactor and autoMode then
+        reactor.setAllControlRodLevels(calculateRodTarget(percent))
+    end
+
+    wirelessModem.transmit(channel, channel, {
+        type = "DATA",
+        percent = percent,
+        active = data.rActive,
+        rods = data.rodLevel,
+        prod = data.rProd,
+        flow = energyFlow,
+        auto = autoMode
+    })
+
+    -- Fixed Listener: Wait for command or 5s timer
+    local timer = os.startTimer(updateInterval)
+    while true do
+        local ev, side, ch, rep, msg = os.pullEvent()
+        if ev == "modem_message" and msg and msg.type == "CMD" then
+            if msg.cmd == "TOGGLE_AUTO" then autoMode = not autoMode
+            elseif msg.cmd == "ON" and reactor then reactor.setActive(true)
+            elseif msg.cmd == "OFF" and reactor then 
+                autoMode = false
+                reactor.setActive(false)
             end
+            break 
+        elseif ev == "timer" and side == timer then
+            break 
         end
     end
 end
