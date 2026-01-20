@@ -1,105 +1,136 @@
 -- =================================================================
--- PowerCTRLWirRemote.lua (Optimized & Robust)
+-- PowerCTRLWirClient.lua
 -- =================================================================
 term.clear()
 term.setCursorPos(1,1)
 print("--- EMS REMOTE SETUP ---")
-write("Target Channel: ")
+write("Wireless Channel: ")
 local channel = tonumber(read()) or 48
 
-local monitor = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
-
 if not modem then error("No Wireless Modem found!") end
-
--- Force close then open to ensure a clean connection
-modem.close(channel)
 modem.open(channel)
 
 local lastData = nil
-local serverTimeout = 12 
-local timer = os.startTimer(serverTimeout)
 
-local function drawUI(data)
-    monitor.setBackgroundColor(colors.black)
-    monitor.clear()
-    
+-- UI RENDERING (Your Original Logic)
+local function drawUI(mon, data)
     if not data then
-        monitor.setCursorPos(2, 2)
-        monitor.setTextColor(colors.red)
-        monitor.write("WAITING FOR SERVER (CH: "..channel..")...")
+        mon.clear()
+        mon.setCursorPos(2,2)
+        mon.write("Waiting for Server...")
         return
     end
 
-    -- Title
-    monitor.setCursorPos(1, 1)
-    monitor.setTextColor(colors.yellow)
-    monitor.write(" REACTOR CONTROL SYSTEM ")
-    
-    -- Energy Bar
-    local width, height = monitor.getSize()
-    local barWidth = width - 4
-    local filled = math.floor(barWidth * data.percent)
-    
-    monitor.setCursorPos(2, 3)
-    monitor.setTextColor(colors.white)
-    monitor.write("Storage: " .. math.floor(data.percent * 100) .. "%")
-    
-    monitor.setCursorPos(2, 4)
-    monitor.setBackgroundColor(colors.gray)
-    monitor.write(string.rep(" ", barWidth))
-    monitor.setCursorPos(2, 4)
-    monitor.setBackgroundColor(data.percent > 0.2 and colors.green or colors.red)
-    monitor.write(string.rep(" ", filled))
-    monitor.setBackgroundColor(colors.black)
+    local w, h = mon.getSize()
+    mon.setBackgroundColor(colors.black)
+    mon.clear()
 
-    -- Stats
-    monitor.setCursorPos(2, 6)
-    monitor.setTextColor(colors.cyan)
-    monitor.write("Flow:   " .. (data.flow or "N/A"))
-    monitor.setCursorPos(2, 7)
-    monitor.write("Output: " .. math.floor(data.prod or 0) .. " RF/t")
-    monitor.setCursorPos(2, 8)
-    monitor.write("Rods:   " .. (data.rods or 0) .. "%")
+    mon.setTextScale(w < 40 and 0.5 or 1)
+    mon.setCursorPos(2, 1)
+    mon.setTextColor(colors.yellow)
+    mon.write("Energy Maintenance System")
 
-    -- Buttons
-    monitor.setCursorPos(2, 10)
-    monitor.setBackgroundColor(data.auto and colors.blue or colors.lightGray)
-    monitor.write(" [AUTO] ")
+    mon.setCursorPos(2, 3)
+    mon.setTextColor(colors.white)
+    mon.write("Energy: ")
+    local col = colors.orange
+    if data.flow == "Charging" then col = colors.green
+    elseif data.flow == "OVERDRIVE" or data.flow == "Empty" then col = colors.red end
+    mon.setTextColor(col)
+    mon.write(data.flow)
+
+    mon.setCursorPos(2, 5)
+    mon.setTextColor(colors.white)
+    mon.write("Automanage CTRL Rods: ")
+    mon.setBackgroundColor(data.auto and colors.green or colors.red)
+    mon.write(data.auto and " [ ON ] " or " [ OFF ] ")
+    mon.setBackgroundColor(colors.black)
+
+    mon.setCursorPos(2, 7)
+    mon.setTextColor(colors.white)
+    mon.write("Rod Insertion: " .. data.rods .. "%")
     
-    monitor.setCursorPos(12, 10)
-    monitor.setBackgroundColor(data.active and colors.green or colors.red)
-    monitor.write(data.active and " [ON] " or " [OFF] ")
-    monitor.setBackgroundColor(colors.black)
+    mon.setCursorPos(2, 8)
+    mon.write("Reactor Status: ")
+    mon.setTextColor(data.active and colors.green or colors.red)
+    mon.write(data.active and "active" or "inactive")
+
+    mon.setCursorPos(2, 9)
+    mon.setTextColor(colors.white)
+    mon.write("Reactor Pr: ")
+    mon.setTextColor(colors.lightBlue)
+    mon.write(string.format("%.1f RF/t", data.prod))
+
+    mon.setCursorPos(2, 11)
+    mon.setBackgroundColor(colors.green)
+    mon.setTextColor(colors.black)
+    mon.write(" [ ENABLE ] ")
+    
+    mon.setCursorPos(15, 11)
+    mon.setBackgroundColor(colors.red)
+    mon.setTextColor(colors.white)
+    mon.write(" [ DISABLE ] ")
+    mon.setBackgroundColor(colors.black)
+
+    -- Right Side Battery
+    local bX, bW = w - 4, 3
+    mon.setCursorPos(bX - 4, 2)
+    mon.setTextColor(colors.lightGray)
+    mon.write("Storage %")
+
+    local bH = h - 3
+    local fill = math.floor(data.percent * (bH - 2))
+    mon.setBackgroundColor(colors.gray)
+    for y = 3, h-1 do
+        mon.setCursorPos(bX, y) mon.write(" ")
+        mon.setCursorPos(bX+bW, y) mon.write(" ")
+    end
+    for x = bX, bX+bW do
+        mon.setCursorPos(x, 3) mon.write(" ")
+        mon.setCursorPos(x, h-1) mon.write(" ")
+    end
+
+    mon.setBackgroundColor(colors.green)
+    for i = 0, fill - 1 do
+        mon.setCursorPos(bX+1, (h-2)-i)
+        mon.write(string.rep(" ", bW-1))
+    end
 end
 
-drawUI(nil) -- Show initial waiting screen
+local function sendCmd(c)
+    modem.transmit(channel, channel, {type = "CMD", cmd = c})
+end
 
+-- Main Event Loop
 while true do
-    local ev, side, ch, rep, msg = os.pullEvent()
-
-    if ev == "modem_message" and ch == channel then
-        if msg and msg.type == "DATA" then
-            lastData = msg
-            drawUI(msg)
-            -- Reset the watchdog timer
-            os.cancelTimer(timer)
-            timer = os.startTimer(serverTimeout)
+    local ev, side, x, y, msg = os.pullEvent()
+    
+    -- Handle Data from Server
+    if ev == "modem_message" and msg and msg.type == "DATA" then
+        lastData = msg
+        for _, n in ipairs(peripheral.getNames()) do
+            if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), lastData) end
         end
-    elseif ev == "timer" and side == timer then
-        -- Server heartbeat lost
-        lastData = nil
-        drawUI(nil)
-        timer = os.startTimer(serverTimeout)
-    elseif ev == "monitor_touch" or ev == "mouse_click" then
-        local x, y = side, ch 
-        if y == 10 then
-            if x >= 2 and x <= 9 then
-                modem.transmit(channel, channel, {type = "CMD", cmd = "TOGGLE_AUTO"})
-            elseif x >= 12 and x <= 18 then
-                local cmd = (lastData and lastData.active) and "OFF" or "ON"
-                modem.transmit(channel, channel, {type = "CMD", cmd = cmd})
+    
+    -- Handle Clicks (Immediate UI change for reactivity)
+    elseif ev == "monitor_touch" and lastData then
+        if y == 5 then
+            lastData.auto = not lastData.auto
+            sendCmd("TOGGLE_AUTO")
+        elseif y == 11 then
+            if x < 14 then
+                lastData.active = true
+                sendCmd("ON")
+            else
+                lastData.active = false
+                lastData.auto = false -- Disable auto if manually turned off
+                sendCmd("OFF")
             end
+        end
+        -- Redraw immediately with predicted state
+        for _, n in ipairs(peripheral.getNames()) do
+            if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), lastData) end
         end
     end
 end
