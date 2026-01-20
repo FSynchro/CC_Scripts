@@ -1,5 +1,5 @@
 -- =================================================================
--- PowerCTRLWirClient.lua
+-- PowerCTRLWirClient.lua (Final Polished Edition)
 -- =================================================================
 term.clear()
 term.setCursorPos(1,1)
@@ -7,7 +7,9 @@ print("--- EMS REMOTE SETUP ---")
 write("Wireless Channel: ")
 local channel = tonumber(read()) or 48
 
+local monitor = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
+
 if not modem then error("No Wireless Modem found!") end
 modem.open(channel)
 
@@ -48,11 +50,10 @@ local function drawUI(mon, data)
     mon.write(data.auto and " [ ON ] " or " [ OFF ] ")
     mon.setBackgroundColor(colors.black)
 
-    -- Rod Text with AutoManaged tag
     mon.setCursorPos(2, 7)
     mon.setTextColor(colors.white)
     local rodTag = data.auto and " [AutoManaged]" or ""
-    mon.write("Rod Insertion: " .. data.rods .. "%" .. rodTag)
+    mon.write("Rod Insertion: " .. math.floor(data.rods) .. "%" .. rodTag)
     
     mon.setCursorPos(2, 8)
     mon.write("Reactor Status: ")
@@ -63,7 +64,6 @@ local function drawUI(mon, data)
     mon.setTextColor(colors.white)
     mon.write("Reactor Pr: " .. string.format("%.1f RF/t", data.prod))
 
-    -- Buttons
     mon.setCursorPos(2, 11)
     mon.setBackgroundColor(colors.green)
     mon.setTextColor(colors.black)
@@ -76,54 +76,72 @@ local function drawUI(mon, data)
     mon.setBackgroundColor(colors.black)
 
     -------------------------------------------------------
-    -- DYNAMIC BARS (Right Side)
+    -- DYNAMIC BARS (With Gray Borders & Labels)
     -------------------------------------------------------
-    local barH = h - 4
-    local startY = 3
+    local barH = h - 6 -- Adjusted for labels above
+    local startY = 4
     
     -- 1. BATTERY (Far Right)
     local bX = w - 4
     local bPercent = data.percent
-    local bFill = math.floor(bPercent * barH)
+    local bFill = math.floor(bPercent * (barH - 2))
     
-    -- Draw Battery Background (Gray)
+    mon.setTextColor(colors.lightGray)
+    mon.setCursorPos(bX, startY - 1)
+    mon.write("BATT")
+
+    -- Border
     mon.setBackgroundColor(colors.gray)
     for y = startY, startY + barH - 1 do
         mon.setCursorPos(bX, y) mon.write("   ")
     end
-    -- Draw Battery Fill (Green)
-    mon.setBackgroundColor(colors.green)
-    for y = 0, bFill - 1 do
-        mon.setCursorPos(bX, (startY + barH - 1) - y)
-        mon.write("   ")
+    -- Background inside border
+    mon.setBackgroundColor(colors.black)
+    for y = startY + 1, startY + barH - 2 do
+        mon.setCursorPos(bX + 1, y) mon.write(" ")
     end
-    -- Draw Battery % inside
-    mon.setCursorPos(bX, startY + (barH / 2))
+    -- Green Fill
+    mon.setBackgroundColor(colors.green)
+    for i = 0, bFill - 1 do
+        mon.setCursorPos(bX + 1, (startY + barH - 2) - i)
+        mon.write(" ")
+    end
+    -- Percentage (No decimals)
     mon.setTextColor(colors.white)
-    mon.setBackgroundColor(bPercent > 0.5 and colors.green or colors.gray)
-    mon.write(math.floor(bPercent * 100))
+    mon.setBackgroundColor(colors.transparent or colors.black)
+    mon.setCursorPos(bX - 1, startY + (barH / 2))
+    mon.write(string.format("%3d", math.floor(bPercent * 100)))
 
-    -- 2. CONTROL RODS (To the left of Battery)
-    local rX = w - 9
+    -- 2. CONTROL RODS (Left of Battery)
+    local rX = w - 10
     local rPercent = data.rods / 100
-    local rFill = math.floor(rPercent * barH)
+    local rFill = math.floor(rPercent * (barH - 2))
 
-    -- Draw Rod Background (Yellow)
-    mon.setBackgroundColor(colors.yellow)
+    mon.setTextColor(colors.lightGray)
+    mon.setCursorPos(rX, startY - 1)
+    mon.write("ROD")
+
+    -- Border
+    mon.setBackgroundColor(colors.gray)
     for y = startY, startY + barH - 1 do
         mon.setCursorPos(rX, y) mon.write("   ")
     end
-    -- Draw Rod Fill (Black - filling from TOP down)
-    mon.setBackgroundColor(colors.black)
-    for y = 0, rFill - 1 do
-        mon.setCursorPos(rX, startY + y)
-        mon.write("   ")
+    -- Yellow Background inside border
+    mon.setBackgroundColor(colors.yellow)
+    for y = startY + 1, startY + barH - 2 do
+        mon.setCursorPos(rX + 1, y) mon.write(" ")
     end
-    -- Draw Rod % inside
-    mon.setCursorPos(rX, startY + (barH / 2))
+    -- Black Fill (Top Down)
+    mon.setBackgroundColor(colors.black)
+    for i = 0, rFill - 1 do
+        mon.setCursorPos(rX + 1, startY + 1 + i)
+        mon.write(" ")
+    end
+    -- Percentage (No decimals)
     mon.setTextColor(colors.white)
-    mon.setBackgroundColor(rPercent > 0.5 and colors.black or colors.yellow)
-    mon.write(data.rods)
+    mon.setBackgroundColor(colors.transparent or colors.black)
+    mon.setCursorPos(rX - 1, startY + (barH / 2))
+    mon.write(string.format("%3d", math.floor(data.rods)))
 
     mon.setBackgroundColor(colors.black)
 end
@@ -132,7 +150,6 @@ local function sendCmd(c)
     modem.transmit(channel, channel, {type = "CMD", cmd = c})
 end
 
--- Main Event Loop
 while true do
     local ev, side, x, y, msg = os.pullEvent()
     
@@ -156,7 +173,6 @@ while true do
                 sendCmd("OFF")
             end
         end
-        -- Immediate redraw for reactivity
         for _, n in ipairs(peripheral.getNames()) do
             if peripheral.getType(n) == "monitor" then drawUI(peripheral.wrap(n), lastData) end
         end
