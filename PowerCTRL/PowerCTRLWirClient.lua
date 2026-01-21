@@ -1,7 +1,7 @@
 -- =================================================================
--- PowerCTRLWirClient.lua (Hardcoded 4335 - HD Edition)
+-- PowerCTRLWirClient.lua (Fully Auto-Scalable HD Edition)
 -- =================================================================
-local channel = 4335 -- Hardcoded as requested
+local channel = 4335
 local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
 
@@ -10,7 +10,7 @@ modem.open(channel)
 
 local lastData = nil
 
--- HELPER: Draw a solid HD Box with a Title
+-- HELPER: Draw a solid HD Box with a Title (Scalable)
 local function drawBox(xMin, xMax, yMin, yMax, title, titleColor)
     mon.setBackgroundColor(colors.gray)
     for x = xMin, xMax do
@@ -21,96 +21,101 @@ local function drawBox(xMin, xMax, yMin, yMax, title, titleColor)
         mon.setCursorPos(xMin, y); mon.write(" ")
         mon.setCursorPos(xMax, y); mon.write(" ")
     end
-    mon.setCursorPos(xMin + 2, yMin)
-    mon.setBackgroundColor(colors.black)
-    mon.setTextColor(titleColor or colors.white)
-    mon.write(" " .. title .. " ")
+    
+    -- Only draw title if there's enough room
+    if (xMax - xMin) > #title + 4 then
+        mon.setCursorPos(xMin + 2, yMin)
+        mon.setBackgroundColor(colors.black)
+        mon.setTextColor(titleColor or colors.white)
+        mon.write(" " .. title .. " ")
+    end
     mon.setBackgroundColor(colors.black)
 end
 
--- HELPER: Vertical Bar for ROD/BATT
-local function drawVerticalBar(x, y, height, percent, color, label)
+-- HELPER: Vertical Bar (Scalable)
+local function drawVerticalBar(x, y, width, height, percent, color, label)
     local fillHeight = math.floor(percent * (height - 2))
-    mon.setTextColor(colors.lightGray)
-    mon.setCursorPos(x, y - 1); mon.write(label)
     
+    -- Label (Only if enough vertical space)
+    if height > 4 then
+        mon.setTextColor(colors.lightGray)
+        mon.setCursorPos(x, y - 1); mon.write(label:sub(1, width))
+    end
+    
+    -- Border/Background
     mon.setBackgroundColor(colors.gray)
     for i = 0, height - 1 do
-        mon.setCursorPos(x, y + i); mon.write("   ")
+        mon.setCursorPos(x, y + i); mon.write(string.rep(" ", width))
     end
     
+    -- Empty Interior
     mon.setBackgroundColor(colors.black)
     for i = 1, height - 2 do
-        mon.setCursorPos(x + 1, y + i); mon.write(" ")
+        mon.setCursorPos(x + 1, y + i); mon.write(string.rep(" ", width - 2))
     end
     
+    -- Progress Fill
     mon.setBackgroundColor(color)
     for i = 0, fillHeight - 1 do
-        mon.setCursorPos(x + 1, (y + height - 2) - i); mon.write(" ")
+        mon.setCursorPos(x + 1, (y + height - 2) - i); mon.write(string.rep(" ", width - 2))
     end
     mon.setBackgroundColor(colors.black)
-end
-
--- REACTOR ASCII ART (Changes based on 'active' status)
-local function drawReactorArt(x, y, active)
-    local col = active and colors.lime or colors.red
-    mon.setTextColor(colors.gray)
-    mon.setCursorPos(x, y);   mon.write("  [#####]  ")
-    mon.setCursorPos(x, y+1); mon.write(" /       \\ ")
-    mon.setCursorPos(x, y+2); mon.write("|  ")
-    mon.setTextColor(col);    mon.write("(o)"); mon.setTextColor(colors.gray); mon.write("  |")
-    mon.setCursorPos(x, y+3); mon.write(" \\_______/ ")
-    mon.setTextColor(colors.gray)
 end
 
 local function drawUI(data)
+    local w, h = mon.getSize()
     mon.setBackgroundColor(colors.black)
     mon.clear()
     
-    -- Main Layout Containers
-    drawBox(2, 26, 2, 10, "CORE STATUS", colors.yellow)
-    drawBox(2, 26, 12, 18, "CONTROL", colors.orange)
-    drawBox(28, 52, 2, 18, "DIAGNOSTICS", colors.lightBlue)
+    -- Dynamic Scaling variables
+    local midX = math.floor(w * 0.52)
+    local leftW = midX - 3
+    
+    -- Boxes
+    drawBox(2, midX - 2, 2, math.floor(h * 0.45), "CORE", colors.yellow)
+    drawBox(2, midX - 2, math.floor(h * 0.55), h - 1, "CTRL", colors.orange)
+    drawBox(midX, w - 1, 2, h - 1, "DIAG", colors.lightBlue)
 
     if not data then
         mon.setTextColor(colors.red)
-        mon.setCursorPos(5, 6); mon.write("WAITING FOR DATA...")
-        mon.setCursorPos(5, 7); mon.write("CH: " .. channel)
+        mon.setCursorPos(4, 4); mon.write("OFFLINE")
         return
     end
 
-    -- CORE STATUS
+    -- CORE STATUS (Scales with height)
     mon.setTextColor(colors.white)
-    mon.setCursorPos(4, 4); mon.write("Energy: ")
-    local flowCol = (data.flow == "Charging") and colors.green or colors.red
-    mon.setTextColor(flowCol); mon.write(data.flow)
+    mon.setCursorPos(4, 4); mon.write("E: ")
+    mon.setTextColor((data.flow == "Charging") and colors.green or colors.red)
+    mon.write(data.flow)
     
-    mon.setTextColor(colors.white)
-    mon.setCursorPos(4, 6); mon.write("Prod: " .. math.floor(data.prod) .. " RF/t")
-    mon.setCursorPos(4, 8); mon.write("Status: ")
-    mon.setTextColor(data.active and colors.green or colors.red)
-    mon.write(data.active and "ONLINE" or "OFFLINE")
+    if h > 10 then
+        mon.setTextColor(colors.white)
+        mon.setCursorPos(4, 6); mon.write("P: " .. math.floor(data.prod))
+        mon.setCursorPos(4, 7); mon.write("R: " .. (data.active and "ON" or "OFF"))
+    end
 
     -- CONTROL BUTTONS
-    mon.setCursorPos(4, 14)
+    local btnY = math.floor(h * 0.7)
+    mon.setCursorPos(4, btnY)
     mon.setBackgroundColor(data.auto and colors.green or colors.red)
     mon.setTextColor(colors.black)
-    mon.write(" AUTO-RODS: " .. (data.auto and "ON " or "OFF") .. " ")
+    mon.write(" AUTO ")
     
-    mon.setBackgroundColor(colors.gray)
-    mon.setTextColor(colors.white)
-    mon.setCursorPos(4, 16); mon.write(" [ENABLE] ")
-    mon.setCursorPos(15, 16); mon.write(" [DISABLE] ")
+    if h > 12 then
+        mon.setBackgroundColor(colors.gray)
+        mon.setTextColor(colors.white)
+        mon.setCursorPos(4, btnY + 2); mon.write(" [ON] ")
+        mon.setCursorPos(4 + 7, btnY + 2); mon.write(" [OFF] ")
+    end
     mon.setBackgroundColor(colors.black)
 
-    -- DIAGNOSTICS (Right Side)
-    drawReactorArt(35, 4, data.active)
-    drawVerticalBar(34, 10, 7, data.rods / 100, colors.yellow, "ROD")
-    drawVerticalBar(44, 10, 7, data.percent, colors.green, "BATT")
+    -- DIAGNOSTICS (Bars scale with monitor height/width)
+    local barWidth = math.max(3, math.floor((w - midX) / 4))
+    local barHeight = h - 8
+    local barY = 5
     
-    mon.setTextColor(colors.white)
-    mon.setCursorPos(34, 17); mon.write(math.floor(data.rods) .. "%")
-    mon.setCursorPos(44, 17); mon.write(math.floor(data.percent * 100) .. "%")
+    drawVerticalBar(midX + 2, barY, barWidth, barHeight, data.rods / 100, colors.yellow, "ROD")
+    drawVerticalBar(midX + barWidth + 4, barY, barWidth, barHeight, data.percent, colors.green, "BATT")
 end
 
 local function sendCmd(c)
@@ -120,21 +125,17 @@ end
 -- Main Loop
 while true do
     drawUI(lastData)
-    local ev, side, ch, rep, msg = os.pullEvent()
+    local ev, side, ch, x, y = os.pullEvent()
     
-    -- Corrected modem message check
-    if ev == "modem_message" and ch == channel then
-        if type(msg) == "table" and msg.type == "DATA" then
-            lastData = msg
-        end
-    
+    if ev == "modem_message" and ch == channel and type(x) == "table" and x.type == "DATA" then
+        lastData = x
     elseif ev == "monitor_touch" and lastData then
-        local tx, ty = rep, msg -- monitor_touch returns side, x, y
-        if ty == 14 and tx >= 4 and tx <= 20 then
-            sendCmd("TOGGLE_AUTO")
-        elseif ty == 16 then
-            if tx >= 4 and tx <= 13 then sendCmd("ON")
-            elseif tx >= 15 and tx <= 24 then sendCmd("OFF") end
+        local w, h = mon.getSize()
+        local btnY = math.floor(h * 0.7)
+        -- Scalable Touch detection
+        if y == btnY then sendCmd("TOGGLE_AUTO")
+        elseif y == btnY + 2 then
+            if x < 10 then sendCmd("ON") else sendCmd("OFF") end
         end
     end
 end
