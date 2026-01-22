@@ -58,7 +58,7 @@ local function drawReactorArt(x, y, active)
     -- Row 1: Top [#####] (Restored colors/structure)
     mon.setCursorPos(x, y)
     mon.setTextColor(colors.gray); mon.write("  [")
-    mon.setTextColor(colors.gray);  mon.write("#####")
+    mon.setTextColor(colors.red);  mon.write("#####")
     mon.setTextColor(colors.gray); mon.write("]  ")
 
     -- Row 2: Slant
