@@ -1,7 +1,9 @@
 CC_Scripts: Integrated Energy & Storage Management
 
 A suite of ComputerCraft (CC: Tweaked) scripts designed to provide real-time monitoring and automation for Extreme Reactors and Applied Energistics 2 (AE2) networks.
-🚀 Installation
+
+
+Installation
 
 You can install these scripts directly onto your in-game computers using the following commands:
 
