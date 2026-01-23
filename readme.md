@@ -16,7 +16,7 @@ clone.min https://github.com/FSynchro/CC_Scripts
 
 🏗️ System Architecture
 
-The system consists of four primary scripts distributed across three or more computers:
+The system consists of four primary scripts distributed across 4 or more computers:
 
  Reactor Server: Manages the physical Reactor and power storage.
 
