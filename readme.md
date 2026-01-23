@@ -20,7 +20,43 @@ The system consists of four primary scripts distributed across three or more com
 
     Reactor Server: Manages the physical Reactor and power storage.
 
-    AE2 Hub: A two-part system that monitors ME storage and calculates drive capacities.
+    AE2 Hub: A two-part system that monitors ME storage and calculates drive capacities. (You'll need 2 AE networks that we can read the contents through ME interfaces, the network that has all the storage Cells and the network that reads the         contents of the drives.   Here's an example interface setup:
+
+```
+
+AE2 setup:
+
+    ME drive  < - - - > ME Controller [Storage cell subnet] -------> ME Interface|MODEM>=========<MODEM|Computer(Ae2Stordrives.lua)|WirelessModem>
+                             |
+                             |
+                             V
+                        ME Interface
+                             ^
+                        Storage BUS
+   (We read the ME interface's contents here with the storage bus
+   meaning we will read the contents of what is stored in the drives
+                in the Storage Cell Subnet)
+                             |
+                             |
+                             |                                                                      =====<MODEM|AdvancedMonitor (for displaying AE2 storage data)
+                             V                                                                      =
+                        ME Controller [Contents of Storage cel subnet) -----> ME Interface|MODEM>========<MODEM|Computer(Ae2StorMonitor.lua)|WirelessModem>
+                             ^
+                             |
+                        ME Crafting Terminal
+
+
+- = fluix
+= = CC network cable
+
+
+Reactor setup:
+
+Big Reactor computer Port|MODEM>====<MODEM|Computer(PWRCTRLWirServer.lua)|Wirelessmodem>
+
+<Wirelessmodem|Computer(PWRCTRLWirClient.lua)|Modem>=======<Modem|AdvancedMonitor (for displaying/controlling reactor status and yellorium ingots stored in AE2)
+
+```
 
     Control Client: A central "NOC" (Network Operations Center) that displays all data on a large monitor and allows for remote reactor control.
 
