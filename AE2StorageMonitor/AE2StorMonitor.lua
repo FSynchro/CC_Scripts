@@ -1,3 +1,6 @@
+-- =================================================================
+-- AE2StorMonitor.lua - FULL RESTORED VERSION
+-- =================================================================
 local wirelessModem
 for _, name in ipairs(peripheral.getNames()) do
     if peripheral.getType(name) == "modem" and peripheral.call(name, "isWireless") then
@@ -10,10 +13,10 @@ if not wirelessModem then error("No Wireless Modem found!") end
 local me = peripheral.find("appliedenergistics2:interface") or error("No ME Interface found")
 local mon = peripheral.find("monitor") or term
 local CHANNEL = 1422
+local BROADCAST_CHANNEL = 1425 
 
 peripheral.call(wirelessModem, "open", CHANNEL)
 
--- Logic Helpers
 local function getStatusColor(percent)
     if percent < 0.60 then return colors.lime end
     if percent < 0.85 then return colors.yellow end
@@ -67,16 +70,13 @@ local function drawDriveArt(x, y)
     mon.setCursorPos(x, y+4); mon.write(" |______| ")
 end
 
--- STATE VARIABLES
 local subnetData = nil
 local isOnline = false
 
--- Initial Clear
 mon.setBackgroundColor(colors.black)
 mon.clear()
 
 while true do
-    -- SWITCHING LOGIC: Clear and draw UI elements only when connection state changes
     if subnetData and not isOnline then
         mon.clear()
         drawBox(2, 28, 2, 12, "NETWORK STATISTICS", colors.yellow)
@@ -92,14 +92,28 @@ while true do
         mon.setCursorPos(5, 7)
         mon.write("OFFLINE: WAITING FOR DATA...")
     else
-        -- DATA CALCULATION
         local mainItems = me.listAvailableItems()
         local usedTypes = #mainItems
         local totalItems = 0
-        for _, it in ipairs(mainItems) do totalItems = totalItems + it.count end
-        local usedBytes = math.floor(totalItems / 8)
+        local yelloriumCount = 0
 
-        -- STATISTICS SECTION
+-- SCANNING FOR YELLORIUM (Fixed with exact ID)
+        for _, it in ipairs(mainItems) do 
+            totalItems = totalItems + it.count 
+            
+            -- Exact ID check + Display Name fallback
+            if it.name == "bigreactors:ingotyellorium" or (it.displayName and it.displayName:find("Yellorium Ingot")) then
+                yelloriumCount = it.count
+            end
+        end
+
+        -- BROADCAST TO POWER MONITOR
+        peripheral.call(wirelessModem, "transmit", BROADCAST_CHANNEL, CHANNEL, {
+            type = "AE2_DATA",
+            count = yelloriumCount
+        })
+
+        local usedBytes = math.floor(totalItems / 8)
         mon.setBackgroundColor(colors.black)
         mon.setTextColor(colors.white)
         mon.setCursorPos(4, 4); mon.write("Storage (Bytes)   ")
@@ -109,12 +123,10 @@ while true do
         mon.setCursorPos(4, 8); mon.write("Types (Unique)     ")
         drawBar(4, 9, 18, usedTypes, subnetData.maxTypes)
 
-        -- SYSTEM DATA
         mon.setCursorPos(32, 4); mon.setTextColor(colors.green);  mon.write("TOT: " .. subnetData.maxBytes .. "      ")
         mon.setCursorPos(32, 5); mon.setTextColor(colors.red);    mon.write("USD: " .. usedBytes .. "      ")
         mon.setCursorPos(32, 6); mon.setTextColor(colors.yellow); mon.write("AVL: " .. math.max(0, subnetData.maxBytes - usedBytes) .. "      ")
 
-        -- CELL LIST (Selective clear of list area only)
         for i = 16, 23 do
             mon.setCursorPos(3, i); mon.write(string.rep(" ", 48))
         end
@@ -134,11 +146,10 @@ while true do
         end
     end
 
-    -- Event listener
     local timer = os.startTimer(2)
     while true do
         local event, side, channel, _, msg = os.pullEvent()
-        if event == "modem_message" and channel == CHANNEL then
+        if event == "modem_message" and channel == 1422 then
             subnetData = msg
             break 
         elseif event == "timer" and side == timer then
