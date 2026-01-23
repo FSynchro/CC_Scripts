@@ -18,12 +18,16 @@ clone.min https://github.com/FSynchro/CC_Scripts
 
 The system consists of four primary scripts distributed across three or more computers:
 
-    Reactor Server: Manages the physical Reactor and power storage.
+ Reactor Server: Manages the physical Reactor and power storage.
 
-    AE2 Hub: A two-part system that monitors ME storage and calculates drive capacities. (You'll need 2 AE networks that we can read the contents through ME interfaces, the network that has all the storage Cells and the network that reads the         contents of the drives.   Here's an example interface setup:
+AE2 Hub: A two-part system that monitors ME storage and calculates drive capacities. 
+(You'll need 2 AE networks that we can read the contents through ME interfaces, the network that has all the storage Cells and the network that reads the contents of the drives, an example architecture can be seen below.)
+
+Control Client: A central "NOC" (Network Operations Center) that displays all data on a large monitor and allows for remote reactor control.
+
+Here's an example architecture for this entire setup:
 
 ```
-
 AE2 setup:
 
     ME drive  < - - - > ME Controller [Storage cell subnet] -------> ME Interface|MODEM>=========<MODEM|Computer(Ae2Stordrives.lua)|WirelessModem>
@@ -46,19 +50,19 @@ AE2 setup:
                         ME Crafting Terminal
 
 
-- = fluix
-= = CC network cable
-
-
 Reactor setup:
 
 Big Reactor computer Port|MODEM>====<MODEM|Computer(PWRCTRLWirServer.lua)|Wirelessmodem>
 
 <Wirelessmodem|Computer(PWRCTRLWirClient.lua)|Modem>=======<Modem|AdvancedMonitor (for displaying/controlling reactor status and yellorium ingots stored in AE2)
 
-```
 
-    Control Client: A central "NOC" (Network Operations Center) that displays all data on a large monitor and allows for remote reactor control.
+
+- = fluix cable
+= = CC network cable
+
+
+```
 
 📄 Script Overview
 1. PowerCTRLWirServer.lua
