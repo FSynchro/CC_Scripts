@@ -137,3 +137,18 @@ To customize your setup, look for these variables at the top of the scripts:
     updateRate: Adjust how often the server pulses data (default 2s).
 
     target: In the Server script, you can adjust the math inside getSmoothRodLevel to change at what battery % the reactor starts throttling.
+
+
+
+
+
+
+
+
+Screenshots:
+
+<img width="1027" height="608" alt="image" src="https://github.com/user-attachments/assets/3d986505-a225-4f0a-aa49-ef2153b63d3c" />
+
+<img width="1330" height="828" alt="image" src="https://github.com/user-attachments/assets/cb26ec29-e574-43fb-b395-ce2d9aa43049" />
+
+
