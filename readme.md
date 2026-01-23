@@ -4,10 +4,15 @@ A suite of ComputerCraft (CC: Tweaked) scripts designed to provide real-time mon
 🚀 Installation
 
 You can install these scripts directly onto your in-game computers using the following commands:
-Bash
+
+
+```
 
 wget https://gist.githubusercontent.com/SquidDev/e0f82765bfdefd48b0b15a5c06c0603b/raw/clone.min.lua
+
 clone.min https://github.com/FSynchro/CC_Scripts
+
+```
 
 🏗️ System Architecture
 
