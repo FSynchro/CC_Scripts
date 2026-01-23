@@ -1,14 +1,17 @@
 -- =================================================================
--- PowerCTRLWirClient.lua
+-- PowerCTRLWirClient.lua - FULL RESTORED VERSION
 -- =================================================================
 local channel = 4335 
+local aeChannel = 1425 
 local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
 
 if not modem then error("No Wireless Modem found!") end
 modem.open(channel)
+modem.open(aeChannel) 
 
 local lastData = nil
+local aeData = { yellorium = 0 } 
 local currentView = "REACTOR"
 local modemLog = {}
 local pendingActive, pendingAuto = nil, nil
@@ -16,7 +19,8 @@ local animIndex = 1
 
 local function logMsg(dir, msg)
     local t = os.date("%H:%M:%S")
-    table.insert(modemLog, 1, "["..t.."] "..dir..": "..(msg.type or "CMD").." "..(msg.cmd or ""))
+    local content = (type(msg) == "table") and (msg.type or "CMD") or tostring(msg)
+    table.insert(modemLog, 1, "["..t.."] "..dir..": "..content)
     if #modemLog > 12 then table.remove(modemLog) end
 end
 
@@ -34,56 +38,32 @@ local function drawVerticalBar(x, y, height, percent, color, label)
     mon.setTextColor(colors.white)
     mon.setBackgroundColor(colors.black)
     mon.setCursorPos(x, y - 1); mon.write(label)
-    
-    -- 1. Draw Gray Frame
     mon.setBackgroundColor(colors.gray)
     for i = 0, height - 1 do mon.setCursorPos(x, y + i); mon.write("   ") end
-    
-    -- 2. Draw Black Gutter (Inside)
     mon.setBackgroundColor(colors.black)
     for i = 1, height - 2 do mon.setCursorPos(x + 1, y + i); mon.write(" ") end
-    
-    -- 3. Draw Color Fill
     local fillHeight = math.floor(percent * (height - 2))
     mon.setBackgroundColor(color)
     for i = 0, fillHeight - 1 do mon.setCursorPos(x + 1, (y + height - 2) - i); mon.write(" ") end
-    
-    -- 4. Percentage Text
     mon.setBackgroundColor(colors.black)
     mon.setTextColor(colors.white)
     mon.setCursorPos(x, y + height); mon.write(math.floor(percent * 100) .. "%")
 end
 
 local function drawReactorArt(x, y, active)
-    -- Row 1: Top [#####] (Restored colors/structure)
     mon.setCursorPos(x, y)
     mon.setTextColor(colors.gray); mon.write("  [")
     mon.setTextColor(colors.red);  mon.write("#####")
     mon.setTextColor(colors.gray); mon.write("]  ")
-
-    -- Row 2: Slant
-    mon.setCursorPos(x, y+1)
-    mon.write(" /       \\ ")
-
-    -- Row 3: Sides and Core
-    mon.setCursorPos(x, y+2)
-    mon.write("|   ")
+    mon.setCursorPos(x, y+1); mon.write(" /       \\ ")
+    mon.setCursorPos(x, y+2); mon.write("|   ")
     mon.setTextColor(active and colors.lime or colors.red)
-    mon.write("(o)")
-    mon.setTextColor(colors.gray)
-    mon.write("   |")
-
-    -- Row 4: Bottom and Animation
-    mon.setCursorPos(x, y+3)
-    mon.write(" \\")
+    mon.write("(o)"); mon.setTextColor(colors.gray); mon.write("   |")
+    mon.setCursorPos(x, y+3); mon.write(" \\")
     if active then
-        -- Knight Rider: 1 red # moving through 7 slots
         for i = 1, 7 do
-            if i == animIndex then
-                mon.setTextColor(colors.red); mon.write("#")
-            else
-                mon.write(" ") -- Invisible background
-            end
+            if i == animIndex then mon.setTextColor(colors.red); mon.write("#")
+            else mon.write(" ") end
         end
     else
         mon.setTextColor(colors.gray); mon.write("_______")
@@ -91,11 +71,23 @@ local function drawReactorArt(x, y, active)
     mon.setTextColor(colors.gray); mon.write("/ ")
 end
 
+local function drawIngotIcon(x, y, fuelCount)
+    mon.setBackgroundColor(colors.yellow)
+    mon.setTextColor(colors.black)
+    mon.setCursorPos(x+1, y);   mon.write("---")
+    mon.setCursorPos(x, y+1);   mon.write("|   |")
+    mon.setCursorPos(x, y+2);   mon.write("'---'")
+    mon.setBackgroundColor(colors.black)
+    mon.setTextColor(colors.yellow)
+    mon.setCursorPos(x, y+4); mon.write("Yello")
+    mon.setCursorPos(x, y+5); mon.write("Ingots")
+    mon.setTextColor(colors.white)
+    mon.setCursorPos(x, y+6); mon.write(string.format("%d", math.floor(fuelCount)))
+end
+
 local function drawUI()
     mon.setBackgroundColor(colors.black)
     mon.clear()
-    
-    -- Nav Buttons (Restored white text)
     mon.setTextColor(colors.white)
     mon.setCursorPos(2,1)
     mon.setBackgroundColor(currentView == "REACTOR" and colors.blue or colors.gray)
@@ -114,7 +106,6 @@ local function drawUI()
         return
     end
 
-    -- REACTOR VIEW
     drawBox(2, 26, 3, 10, "REACTOR STATUS", colors.yellow)
     drawBox(2, 26, 12, 18, "CONTROL", colors.orange)
     drawBox(28, 52, 3, 18, "DIAGNOSTICS", colors.lightBlue)
@@ -124,11 +115,9 @@ local function drawUI()
         return
     end
 
-    -- Sync feedback logic
     if pendingActive == lastData.active then pendingActive = nil end
     if pendingAuto == lastData.auto then pendingAuto = nil end
 
-    -- CORE STATUS
     mon.setTextColor(colors.white); mon.setCursorPos(4, 5); mon.write("Energy: ")
     mon.setTextColor(lastData.flow == "Charging" and colors.green or colors.red); mon.write(lastData.flow)
     mon.setTextColor(colors.white); mon.setCursorPos(4, 7); mon.write("Prod: "..math.floor(lastData.prod).." RF/t")
@@ -136,7 +125,6 @@ local function drawUI()
     local sCol = (pendingActive ~= nil) and colors.yellow or (lastData.active and colors.green or colors.red)
     mon.setTextColor(sCol); mon.write(lastData.active and "ONLINE" or "OFFLINE")
 
-    -- CONTROL
     mon.setCursorPos(4, 14)
     mon.setBackgroundColor(pendingAuto ~= nil and colors.yellow or (lastData.auto and colors.green or colors.red))
     mon.setTextColor(colors.black); mon.write(" AUTO-RODS: "..(lastData.auto and "ON " or "OFF").." ")
@@ -147,10 +135,10 @@ local function drawUI()
     mon.setBackgroundColor(pendingActive == false and colors.yellow or colors.gray)
     mon.setCursorPos(15, 16); mon.write(" [DISABLE] ")
 
-    -- DIAGNOSTICS (Full layout restoration)
     drawReactorArt(35, 5, lastData.active)
-    drawVerticalBar(34, 11, 6, (lastData.rods or 0)/100, colors.yellow, "ROD")
-    drawVerticalBar(44, 11, 6, (lastData.percent or 0), colors.green, "BATT")
+    drawIngotIcon(31, 11, aeData.yellorium)
+    drawVerticalBar(39, 11, 6, (lastData.rods or 0)/100, colors.yellow, "ROD")
+    drawVerticalBar(45, 11, 6, (lastData.percent or 0), colors.green, "BATT")
 end
 
 local function sendCmd(c)
@@ -159,16 +147,21 @@ local function sendCmd(c)
     logMsg("SENT", payload)
 end
 
--- Timing Loop
-local animTimer = os.startTimer(1)
+local animTimer = os.startTimer(0.5)
 while true do
     drawUI()
-    local ev, side, x, y, msg = os.pullEvent()
-    
-    if ev == "modem_message" and x == channel then
-        if type(msg) == "table" and msg.type == "DATA" then lastData = msg end
-        logMsg("RECV", msg)
+    local ev, p1, p2, p3, p4 = os.pullEvent()
+    if ev == "modem_message" then
+        if p2 == channel then
+            if type(p4) == "table" and p4.type == "DATA" then lastData = p4 end
+elseif p2 == aeChannel then
+    if type(p4) == "table" then 
+        -- This must match the 'count' key sent above
+        aeData.yellorium = p4.count or 0 
+    end
+end        logMsg("RECV", p4)
     elseif ev == "monitor_touch" then
+        local x, y = p2, p3
         if y == 1 then
             if x >= 2 and x <= 12 then currentView = "REACTOR"
             elseif x >= 15 and x <= 25 then currentView = "MODEM" end
@@ -179,9 +172,8 @@ while true do
                 elseif x >= 15 and x <= 24 then pendingActive = false; sendCmd("OFF") end
             end
         end
-    elseif ev == "timer" and side == animTimer then
-        animIndex = animIndex + 1
-        if animIndex > 7 then animIndex = 1 end
-        animTimer = os.startTimer(1) -- Slow 1-second animation
+    elseif ev == "timer" and p1 == animTimer then
+        animIndex = (animIndex % 7) + 1
+        animTimer = os.startTimer(0.5)
     end
 end
