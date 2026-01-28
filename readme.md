@@ -70,6 +70,9 @@ Big Reactor computer Port|MODEM>====<MODEM|Computer(PWRCTRLWirServer.lua)|Wirele
 
 
 ```
+<img width="1924" height="1041" alt="image" src="https://github.com/user-attachments/assets/73428d02-fd3d-4cc6-a489-935cf5d176e0" />
+
+
 
 📄 Script Overview
 1. PowerCTRLWirServer.lua
