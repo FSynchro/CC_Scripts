@@ -32,7 +32,12 @@ Here's an example architecture for this entire setup:
 ```
 AE2 setup:
 
-    ME drive  < - - - > ME Controller [Storage cell subnet] -------> ME Interface|MODEM>=========<MODEM|Computer(Ae2Stordrives.lua)|WirelessModem>
+                           ME drive|Storage Interface< - - - > ME Controller [Storage cell subnet] -------> ME Interface|MODEM>=========<MODEM|Computer(Ae2Stordrives.lua)|WirelessModem>
+                             |
+                             |
+                             |
+ [Optional] Me controller to connect more ME drives for bigger storage network
+                             |
                              |
                              |
                              V
