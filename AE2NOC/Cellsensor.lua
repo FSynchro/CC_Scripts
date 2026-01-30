@@ -12,11 +12,7 @@ print("Cell Sensor Online - Channel " .. CHANNEL)
 while true do
     local status, items = pcall(me.listAvailableItems)
     if status and items then
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "CELL_DATA",
-            items = items
-        })
-        print(os.date("[%H:%M:%S]") .. " Cell list sent")
+        modem.transmit(CHANNEL, CHANNEL, { type = "CELL_DATA", items = items })
     end
     sleep(2)
 end
