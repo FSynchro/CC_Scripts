@@ -1,16 +1,24 @@
 -- =================================================================
--- NOCDisplay.lua - Central UI & Processing (v2.1 - Gray Offline)
+-- NOCDisplay.lua - Final v11 (Precision Right-Side Alignment)
 -- =================================================================
 local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(_, p) return p.isWireless() end) 
     or error("No Modem")
 
-modem.open(1422) -- Cell Data
-modem.open(1428) -- Main/CPU Data
+mon.setTextScale(0.5)
+
+modem.open(1422) 
+modem.open(1428)
+
+local currentTab = 1
+local debugLog = {
+    [1422] = { lastSeen = "Never", status = "Waiting..." },
+    [1428] = { lastSeen = "Never", status = "Waiting..." }
+}
 
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
 local mainData = { totalItems = 0, usedTypes = 0 }
-local cpuData = { count = 0, busy = 0, avgCoPro = 0 }
+local cpuData = { count = 0, busy = 0 }
 
 local driveSpecs = {
     ["appliedenergistics2:storage_cell_1k"] = 1024,
@@ -27,10 +35,30 @@ local function formatValue(val)
     return val .. "B"
 end
 
+local function drawTabs()
+    mon.setCursorPos(2, 1)
+    mon.setBackgroundColor(currentTab == 1 and colors.lime or colors.gray)
+    mon.setTextColor(colors.black)
+    mon.write(" [ 1: DASH ] ")
+
+    mon.setCursorPos(15, 1)
+    mon.setBackgroundColor(currentTab == 2 and colors.yellow or colors.gray)
+    mon.setTextColor(colors.black)
+    mon.write(" [ 2: DEBUG ] ")
+    
+    mon.setBackgroundColor(colors.black)
+end
+
 local function drawBox(xMin, xMax, yMin, yMax, title, titleColor)
     mon.setBackgroundColor(colors.gray)
-    for x = xMin, xMax do mon.setCursorPos(x, yMin); mon.write(" "); mon.setCursorPos(x, yMax); mon.write(" ") end
-    for y = yMin, yMax do mon.setCursorPos(xMin, y); mon.write(" "); mon.setCursorPos(xMax, y); mon.write(" ") end
+    for x = xMin, xMax do 
+        mon.setCursorPos(x, yMin); mon.write(" ") 
+        mon.setCursorPos(x, yMax); mon.write(" ") 
+    end
+    for y = yMin, yMax do 
+        mon.setCursorPos(xMin, y); mon.write(" ") 
+        mon.setCursorPos(xMax, y); mon.write(" ") 
+    end
     mon.setCursorPos(xMin + 2, yMin); mon.setBackgroundColor(colors.black)
     mon.setTextColor(titleColor); mon.write(" " .. title .. " ")
 end
@@ -45,88 +73,114 @@ end
 
 local function drawCPUGrid(x, y)
     local totalPixels = 64
-    -- Calculate busy pixels ONLY if we have CPUs
     local busyPixels = cpuData.count > 0 and math.floor((cpuData.busy / cpuData.count) * totalPixels) or 0
-    
-    for i = 0, totalPixels - 1 do
-        mon.setCursorPos(x + (i % 8), y + math.floor(i / 8))
-        
-        if cpuData.count == 0 then
-            mon.setBackgroundColor(colors.gray)   -- OFFLINE
-        elseif i < busyPixels then
-            mon.setBackgroundColor(colors.red)    -- BUSY
-        else
-            mon.setBackgroundColor(colors.lime)   -- IDLE
-        end
-        mon.write(" ")
+    for i = 0, 31 do 
+        local col = i % 8
+        local row = math.floor(i / 8)
+        local topPixelIdx = (row * 16) + col
+        local botPixelIdx = (row * 16) + col + 8
+        local topColor = (topPixelIdx < busyPixels) and colors.red or colors.lime
+        local botColor = (botPixelIdx < busyPixels) and colors.red or colors.lime
+        if cpuData.count == 0 then topColor, botColor = colors.gray, colors.gray end
+        mon.setCursorPos(x + col, y + row)
+        mon.setBackgroundColor(botColor); mon.setTextColor(topColor); mon.write("\143") 
     end
     mon.setBackgroundColor(colors.black)
 end
 
 local function refreshUI()
-    mon.clear()
-    drawBox(2, 28, 2, 12, "STORAGE STATISTICS", colors.yellow)
-    drawBox(30, 52, 2, 12, "SYSTEM STATUS", colors.orange)
-    drawBox(2, 52, 14, 24, "CELL INVENTORY", colors.lightBlue)
-
-    local usedBytes = math.floor(mainData.totalItems / 8)
-    drawBar(4, 5, 16, usedBytes, storageData.maxBytes)
-    drawBar(4, 9, 16, mainData.usedTypes, storageData.maxTypes)
+    if currentTab == 2 then 
+        mon.clear(); drawTabs()
+        mon.setTextColor(colors.white); mon.setCursorPos(2, 4); mon.write("MODEM DIAGNOSTICS")
+        local row = 7
+        for chan, data in pairs(debugLog) do
+            mon.setCursorPos(2, row); mon.setTextColor(colors.cyan); mon.write("Channel " .. chan .. ": ")
+            mon.setTextColor(colors.white); mon.write(data.status)
+            mon.setCursorPos(2, row + 1); mon.setTextColor(colors.gray); mon.write(" Last RX: " .. data.lastSeen)
+            row = row + 3
+        end
+        return 
+    end
     
-    mon.setTextColor(colors.green); mon.setCursorPos(32, 4); mon.write("T-B: "..formatValue(storageData.maxBytes))
-    mon.setTextColor(colors.red);   mon.setCursorPos(32, 5); mon.write("U-B: "..formatValue(usedBytes))
-    mon.setTextColor(colors.yellow);mon.setCursorPos(32, 6); mon.write("A-B: "..formatValue(storageData.maxBytes - usedBytes))
+    mon.clear(); drawTabs()
     
-    mon.setTextColor(colors.green); mon.setCursorPos(32, 8); mon.write("T-T: "..storageData.maxTypes)
-    mon.setTextColor(colors.red);   mon.setCursorPos(32, 9); mon.write("U-T: "..mainData.usedTypes)
-    mon.setTextColor(colors.yellow);mon.setCursorPos(32, 10);mon.write("A-T: ".. (storageData.maxTypes - mainData.usedTypes))
-
-    mon.setTextColor(colors.white); mon.setCursorPos(32, 14); mon.write("CRAFTING GRID")
-    drawCPUGrid(43, 15)
-    mon.setTextColor(cpuData.count == 0 and colors.red or colors.white)
-    mon.setCursorPos(32, 16); mon.write("CPUs: " .. cpuData.count)
+    -- BOX 1: Left Top (NETWORK STATISTICS)
+    drawBox(2, 29, 3, 12, "NETWORK STATISTICS", colors.yellow)
     mon.setTextColor(colors.white)
-    mon.setCursorPos(32, 17); mon.write("Busy: " .. cpuData.busy)
-    mon.setCursorPos(32, 18); mon.write("CoP: " .. string.format("%.1f", cpuData.avgCoPro))
+    mon.setCursorPos(4, 5); mon.write("Storage (Bytes)")
+    drawBar(4, 6, 17, math.floor(mainData.totalItems / 8), storageData.maxBytes)
+    mon.setCursorPos(4, 9); mon.write("Types (Unique)")
+    drawBar(4, 10, 17, mainData.usedTypes, storageData.maxTypes)
+    
+    -- BOX 2: Right Top (SYSTEM) - Extended 4 right
+    drawBox(31, 56, 3, 12, "SYSTEM", colors.orange)
+    local usedBytes = math.floor(mainData.totalItems / 8)
+    mon.setCursorPos(33, 5); mon.setTextColor(colors.green);  mon.write("TOT: "..formatValue(storageData.maxBytes))
+    mon.setCursorPos(33, 6); mon.setTextColor(colors.red);    mon.write("USD: "..formatValue(usedBytes))
+    mon.setCursorPos(33, 7); mon.setTextColor(colors.yellow); mon.write("AVL: "..formatValue(math.max(0, storageData.maxBytes - usedBytes)))
+    mon.setCursorPos(33, 9); mon.setTextColor(colors.green);  mon.write("T-TYP: "..storageData.maxTypes)
+    mon.setCursorPos(33, 10); mon.setTextColor(colors.red);    mon.write("U-TYP: "..mainData.usedTypes)
+    mon.setCursorPos(33, 11); mon.setTextColor(colors.yellow); mon.write("A-TYP: "..math.max(0, storageData.maxTypes - mainData.usedTypes))
 
+    -- BOX 3: Left Bottom (CELLS)
+    drawBox(2, 29, 14, 28, "DETECTED STORAGE CELLS", colors.lightBlue)
     local line = 16
     local sorted = {}
     for k in pairs(storageData.counts) do table.insert(sorted, k) end
     table.sort(sorted)
     for _, label in ipairs(sorted) do
-        if line < 24 then
+        if line < 27 then
             mon.setCursorPos(4, line); mon.setTextColor(colors.white); mon.write("- "..label.." Cell: ")
             mon.setTextColor(colors.lime); mon.write("["..storageData.counts[label].."]"); line = line + 1
         end
     end
+
+    -- BOX 4: Right Bottom (CRAFTING) - Extended 4 right
+    drawBox(31, 56, 14, 28, "CRAFTING STATUS", colors.magenta)
+    drawCPUGrid(44, 16) 
+    mon.setTextColor(colors.white)
+    mon.setCursorPos(33, 21); mon.write("CPUs:  ")
+    mon.setTextColor(cpuData.count == 0 and colors.red or colors.lime); mon.write(cpuData.count)
+    mon.setTextColor(colors.white)
+    mon.setCursorPos(33, 22); mon.write("Busy:  " .. cpuData.busy)
+    local cpuLoad = cpuData.count > 0 and math.floor((cpuData.busy/cpuData.count)*100) or 0
+    mon.setCursorPos(33, 23); mon.write("Load:  " .. cpuLoad .. "%")
 end
 
--- [The rest of the while true loop remains identical]
+-- Logic Loop (Unchanged)
 while true do
-    local _, _, chan, _, msg = os.pullEvent("modem_message")
-    if chan == 1422 then
-        storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
-        for _, it in ipairs(msg.items) do
-            local cap = 0
-            if driveSpecs[it.name] then
-                if type(driveSpecs[it.name]) == "table" then cap = driveSpecs[it.name][it.damage] or 0
-                else cap = driveSpecs[it.name] end
-                local label = (type(driveSpecs[it.name]) == "table") and (math.floor(cap/1024).."k") or (it.name:match("storage_cell_(%d+k)") or "1k")
-                storageData.maxBytes = storageData.maxBytes + (cap * it.count)
-                storageData.maxTypes = storageData.maxTypes + (63 * it.count)
-                storageData.counts[label] = (storageData.counts[label] or 0) + it.count
+    local event, side, x, y, msg = os.pullEvent()
+    if event == "monitor_touch" then
+        if y == 1 then
+            if x >= 2 and x <= 13 then currentTab = 1; refreshUI() end
+            if x >= 15 and x <= 26 then currentTab = 2; refreshUI() end
+        end
+    elseif event == "modem_message" then
+        local chan, data = x, msg
+        if type(data) == "table" then
+            if debugLog[chan] then debugLog[chan].lastSeen = os.date("%H:%M:%S"); debugLog[chan].status = "ONLINE" end
+            if chan == 1422 and data.items then
+                storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
+                for _, it in ipairs(data.items) do
+                    if driveSpecs[it.name] then
+                        local cap = (type(driveSpecs[it.name]) == "table") and (driveSpecs[it.name][it.damage] or 0) or driveSpecs[it.name]
+                        local label = (type(driveSpecs[it.name]) == "table") and (math.floor(cap/1024).."k") or (it.name:match("storage_cell_(%d+k)") or "1k")
+                        storageData.maxBytes = storageData.maxBytes + (cap * it.count)
+                        storageData.maxTypes = storageData.maxTypes + (63 * it.count)
+                        storageData.counts[label] = (storageData.counts[label] or 0) + it.count
+                    end
+                end
+            elseif chan == 1428 and data.items and data.cpus then
+                mainData.totalItems, mainData.usedTypes = 0, 0
+                for _, it in ipairs(data.items) do 
+                    mainData.totalItems = mainData.totalItems + it.count 
+                    if it.count > 0 then mainData.usedTypes = mainData.usedTypes + 1 end
+                end
+                local busy = 0
+                for _, c in ipairs(data.cpus) do if c.busy then busy = busy + 1 end end
+                cpuData = { count = #data.cpus, busy = busy }
             end
+            refreshUI()
         end
-    elseif chan == 1428 then
-        mainData.totalItems = 0
-        mainData.usedTypes = #msg.items
-        for _, it in ipairs(msg.items) do mainData.totalItems = mainData.totalItems + it.count end
-        local totalCo, busy = 0, 0
-        for _, c in ipairs(msg.cpus) do
-            totalCo = totalCo + (c.coprocessors or 0)
-            if c.busy then busy = busy + 1 end
-        end
-        cpuData = { count = #msg.cpus, busy = busy, avgCoPro = #msg.cpus > 0 and totalCo/#msg.cpus or 0 }
-        refreshUI()
     end
 end
