@@ -1,162 +1,70 @@
-CC_Scripts: Integrated Energy & Storage Management
+🌌 Integrated Base Management System
 
-A suite of ComputerCraft (CC: Tweaked) scripts designed to provide real-time monitoring and automation for Extreme Reactors and Applied Energistics 2 (AE2) networks.
+A high-performance automation suite for Applied Energistics 2 and Extreme Reactors. This system uses a decentralized sensor-hub architecture to provide real-time base telemetry with zero interface lag.
+📂 Project Structure
 
+The system is split into two primary modules. Each handles a critical part of your base infrastructure and shares data wirelessly for a unified overview.
+1. AE2NOC
 
-Installation
+Role: Storage, Crafting, and Resource Sensing.
 
-You can install these scripts directly onto your in-game computers using the following commands:
+    Capabilities: 2x3 Monitor Dashboard, theoretical capacity math (Bytes/Types), and a 64-pixel graphical crafting load grid. Acts as the "Main Sensor" for the entire network.
 
+2. PowerCTRL
 
-```
+Role: Intelligent Reactor Automation & UI.
 
+    Capabilities: Dampened rod control for fuel efficiency, remote touch-screen operation, and live Yellorium tracking via the NOC sensor relay.
+
+📡 Wireless Communication Map
+
+The system uses a wireless mesh to synchronize data between sensors, the NOC hub, and the Reactor controls:
+Channel	Traffic Flow	Description
+1422	Cell Sensor ➔ NOC	Raw physical drive data for capacity math.
+1428	Main Sensor ➔ NOC	Total item counts and Crafting CPU states.
+1425	Main Sensor ➔ Power	Relay: Broadcasts Yellorium counts for fuel tracking.
+4335	Power Server ➔ Client	Reactor telemetry and remote command sync.
+🛠️ Installation
+
+You can install the entire suite directly onto your in-game computers using the following commands:
+Bash
+
+# 1. Download the clone utility
 wget https://gist.githubusercontent.com/SquidDev/e0f82765bfdefd48b0b15a5c06c0603b/raw/clone.min.lua
 
+# 2. Clone the repository
 clone.min https://github.com/FSynchro/CC_Scripts
 
-```
+⚙️ Setting Up Auto-Start (startup.lua)
 
-🏗️ System Architecture
+To ensure your base monitors and controllers stay online after a server restart, you must create a startup.lua file on each computer. Replace FILENAME.lua with the actual script name for that machine.
+For Sensor & Server Nodes (Headless)
 
-The system consists of four primary scripts distributed across 4 or more computers:
+Run this command on the computer to create the auto-boot file:
+Bash
 
- Reactor Server: Manages the physical Reactor and power storage.
+shell.run("edit startup.lua")
 
-AE2 Hub: A two-part system that monitors ME storage and calculates drive capacities. 
-(You'll need 2 AE networks that we can read the contents through ME interfaces, the network that has all the storage Cells and the network that reads the contents of the drives, an example architecture can be seen below.)
+Type the following into the editor:
+Lua
 
-Control Client: A central "NOC" (Network Operations Center) that displays all data on a large monitor and allows for remote reactor control.
+shell.run("cd /AE2NOC") -- or /PowerCTRL depending on the machine
+shell.run("FILENAME.lua")
 
-Here's an example architecture for this entire setup:
+For Display Nodes (NOC & Power Client)
 
-```
-AE2 setup:
+If you want the computer to automatically clear the terminal and focus on the monitor at boot:
+Lua
 
-                           ME drive|Storage Bus< - - - > ME Controller [Storage cell subnet] -------> ME Interface|MODEM>=========<MODEM|Computer(Ae2Stordrives.lua)|WirelessModem>
-                             |
-                             |
-                             |
- [Optional] Me controller to connect more ME drives for bigger storage network
-                             |
-                             |
-                             |
-                             V
-                        ME Interface
-                             ^
-                        Storage BUS
-   (We read the ME interface's contents here with the storage bus
-   meaning we will read the contents of what is stored in the drives
-                in the Storage Cell Subnet)
-                             |
-                             |
-                             |                                                                      =====<MODEM|AdvancedMonitor (for displaying AE2 storage data)
-                             V                                                                      =
-                        ME Controller [Contents of Storage cel subnet) -----> ME Interface|MODEM>========<MODEM|Computer(Ae2StorMonitor.lua)|WirelessModem>
-                             ^
-                             |
-                        ME Crafting Terminal
+term.clear()
+print("Initializing NOC Dashboard...")
+shell.run("cd /AE2NOC")
+shell.run("NOCDisplay.lua")
 
+📋 Requirements
 
-Reactor setup:
+    Applied Energistics 2: ME Interfaces (for sensors) and Storage Buses (for the Cell subnet).
 
-Big Reactor computer Port|MODEM>====<MODEM|Computer(PWRCTRLWirServer.lua)|Wirelessmodem>
+    Extreme Reactors: Reactor Computer Port.
 
-<Wirelessmodem|Computer(PWRCTRLWirClient.lua)|Modem>=======<Modem|AdvancedMonitor (for displaying/controlling reactor status and yellorium ingots stored in AE2)
-
-
-
-- = fluix cable
-= = CC network cable
-
-
-```
-<img width="1924" height="1041" alt="image" src="https://github.com/user-attachments/assets/73428d02-fd3d-4cc6-a489-935cf5d176e0" />
-
-
-
-📄 Script Overview
-1. PowerCTRLWirServer.lua
-
-Role: The "Brain" of the power plant.
-
-    Hardware: Connect directly to a Reactor (Extreme Reactors) and Energy Cells/Capacitors. Requires a Wireless Modem.
-
-    Features:
-
-        Dampened Rod Control: Automatically adjusts control rods based on battery percentage to prevent "bouncing" and maximize fuel efficiency.
-
-        Overdrive Mode: Detects critical power failure (<5%) and forces maximum output.
-
-        Wireless API: Broadcasts status data on Channel 4335 and listens for remote commands (ON/OFF/AUTO).
-
-2. PowerCTRLWirClient.lua
-
-Role: The User Interface.
-
-    Hardware: Advanced Computer with an Advanced Monitor attached.
-
-    Features:
-
-        Dual-View System: Toggle between [REACTOR] status and [MODEM] traffic logs.
-
-        Touch Controls: Enable/Disable the reactor or toggle Auto-Rod logic via the monitor.
-
-        Diagnostics: Visualizes battery levels, control rod depth, and Yellorium Ingot counts pulled from the AE2 network.
-
-        Live Animation: Dynamic ASCII art showing reactor core activity.
-
-3. AE2StorMonitor.lua
-
-Role: The AE2 Dashboard.
-
-    Hardware: Attached to an ME Interface and an Advanced Monitor.
-
-    Features:
-
-        Inventory Scanning: Scans the network for bigreactors:ingotyellorium.
-
-        Broadcasting: Transmits the fuel count to the Power Client on Channel 1425.
-
-        Local Display: Shows a breakdown of total bytes used, unique item types, and a list of detected storage cells.
-
-4. AE2StorDrives.lua
-
-Role: Capacity Calculator.
-
-    Hardware: Attached to the same ME Interface as the Monitor.
-
-    Features:
-
-        Drive Specs: Contains a database of storage capacities for 1k, 4k, 16k, and 64k cells (including ExtraCells support).
-
-        Real-time Math: Calculates the theoretical maximum byte/type capacity of the network and sends it to the Monitor script via Channel 1422.
-
-📡 Wireless Channel Map
-Channel	Sender	Receiver	Description
-4335	Server	Client	Reactor Stats & Remote Commands
-1422	Drives	Monitor	Max Capacity & Drive Count Data
-1425	Monitor	Client	Yellorium Ingot Count (AE2 -> Power)
-🛠️ Configuration
-
-To customize your setup, look for these variables at the top of the scripts:
-
-    channel: Change this if you have multiple reactor setups nearby.
-
-    updateRate: Adjust how often the server pulses data (default 2s).
-
-    target: In the Server script, you can adjust the math inside getSmoothRodLevel to change at what battery % the reactor starts throttling.
-
-
-
-
-
-
-
-
-Screenshots:
-
-<img width="1027" height="608" alt="image" src="https://github.com/user-attachments/assets/3d986505-a225-4f0a-aa49-ef2153b63d3c" />
-
-<img width="1330" height="828" alt="image" src="https://github.com/user-attachments/assets/cb26ec29-e574-43fb-b395-ce2d9aa43049" />
-
-
+    Peripherals: Wireless Modems on all computers; Advanced Monitors for display nodes.
