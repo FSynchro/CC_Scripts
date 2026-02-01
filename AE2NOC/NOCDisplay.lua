@@ -327,25 +327,29 @@ local function refreshUI()
             friendlyName = db[currentKey].label or "Unknown"
         end
 
--- 3. Translation Scheduler Display (Tab 2 Continued)
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.orange); buffer.write("TRANSLATION SCHEDULER")
-        r = r + 1
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("Queue Size:    ".. (s.queueSize or 0))
-        r = r + 2
-        
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.gray); buffer.write("--- Current Entry ---")
-        r = r + 1
-        
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("displayName:  ")
-        buffer.setTextColor(colors.yellow); buffer.write(tostring(friendlyName):sub(1, 20))
-        r = r + 1
-        
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("itemname:      ")
-        buffer.setTextColor(colors.lightGray); buffer.write(tostring(currentKey):sub(1, 20))
-        r = r + 2
-        
-        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("Write Status: ")
-        local wStat = s.writeStatus or "Idle"
+-- Translation Scheduler Display
+drawBox(2, 28, 9, 14, "TRANSLATION SCHEDULER", colors.purple)
+buffer.setCursorPos(4, 10)
+buffer.setTextColor(colors.yellow)
+buffer.write("Queue Size: " .. (serverData.stats.queueSize or 0))
+
+buffer.setCursorPos(4, 12)
+buffer.setTextColor(colors.gray)
+buffer.write("Current Entry:")
+
+buffer.setCursorPos(4, 13)
+local entry = serverData.stats.currentEntry
+if entry then
+    -- Check our local DB mirror for the pretty name
+    local label = serverData.itemDB[entry.key] and serverData.itemDB[entry.key].label 
+    local nameToShow = label or entry.name:match(":(.+)$") or entry.name
+    
+    buffer.setTextColor(colors.white)
+    buffer.write("> " .. tostring(nameToShow):sub(1, 22))
+else
+    buffer.setTextColor(colors.lime)
+    buffer.write("Status: IDLE")
+end
         
         local statusCol = colors.gray
         if wStat == "Complete" then statusCol = colors.lime 
