@@ -33,24 +33,22 @@ FSYNC uses a synchronized frequency map to ensure data integrity across all node
 
 ## 🛠️ Installation & Deployment
 
-### 1. Fast Clone
-Run these commands on any Advanced Computer with a Wireless Modem:
+### Fast Clone
+Run these commands on any Advanced Computer:
 
 ```bash
 wget https://gist.githubusercontent.com/SquidDev/e0f82765bfdefd48b0b15a5c06c0603b/raw/clone.min.lua
 clone.min https://github.com/FSynchro/CC_Scripts
 
+```
 ### Startupmaker Guide 
 
-```markdown
 ---
 
 ## 🚀 Using the FSYNC Startup Utility
 
 The `startupmaker.lua` script is a specialized configuration tool designed to manage how your computers behave when they reboot. Instead of manually editing `startup.lua` files, this utility provides a visual interface to link your hardware to the correct software module.
 
-### How to use:
-1. **Launch the Utility**: Navigate to your root directory and run:
-   ```bash
-   /CC_Scripts/startupmaker.lua
+### How to use: 
+run: /CC_Scripts/startupmaker.lua
 
