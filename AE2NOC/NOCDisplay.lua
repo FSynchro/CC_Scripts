@@ -318,6 +318,7 @@ local function refreshUI()
         local s = serverData.stats or {}
         local db = serverData.itemDB or {}
         local currentKey = s.currentItem or "Idle"
+        local entry = stats.currentEntry
         
         -- Pull friendly name from the DB using the currentKey
         local friendlyName = "N/A"
@@ -327,46 +328,56 @@ local function refreshUI()
             friendlyName = db[currentKey].label or "Unknown"
         end
 
--- Translation Scheduler Display
-drawBox(2, 28, 9, 15, "TRANSLATION SCHEDULER", colors.purple)
+-- 1. Scheduler Header
+buffer.setCursorPos(4, 9)
+buffer.setTextColor(colors.orange)
+buffer.write("TRANSLATION SCHEDULER")
 buffer.setCursorPos(4, 10)
-buffer.setTextColor(colors.yellow)
-buffer.write("Queue Size: " .. (serverData.stats.queueSize or 0))
+buffer.setTextColor(colors.white)
+buffer.write("Queue Size:    " .. (stats.queueSize or 0))
 
+-- 2. Current Entry Section
 buffer.setCursorPos(4, 12)
 buffer.setTextColor(colors.gray)
-buffer.write("Current Entry:")
+buffer.write("--- Current Entry ---")
 
-buffer.setCursorPos(4, 13)
-local entry = serverData.stats.currentEntry
 if entry then
-    -- Check our local DB mirror for the pretty name
-    local label = serverData.itemDB[entry.key] and serverData.itemDB[entry.key].label 
-    local nameToShow = label or entry.name:match(":(.+)$") or entry.name
+    -- Get display name from our DB if available
+    local dbEntry = serverData.itemDB[entry.key] or {}
+    local dName = dbEntry.label or "Translating..."
     
+    buffer.setCursorPos(4, 13)
     buffer.setTextColor(colors.white)
-    buffer.write("> " .. tostring(nameToShow):sub(1, 22))
-else
-    buffer.setTextColor(colors.lime)
-    buffer.write("Status: IDLE")
-end
-        
--- Determine status based on whether an entry exists
-    local statusText = "IDLE"
-    local statusCol = colors.gray
-    
-    if serverData.stats.currentEntry then
-        statusText = "RUNNING"
-        statusCol = colors.yellow
-    elseif (serverData.stats.queueSize or 0) > 0 then
-        statusText = "WAITING"
-        statusCol = colors.cyan
-    end
+    buffer.write("displayName:   ")
+    buffer.setTextColor(colors.yellow)
+    buffer.write(tostring(dName):sub(1, 25))
 
-    -- Draw the status tag
-buffer.setCursorPos(4, 14) 
-buffer.setTextColor(statusCol)
-buffer.write("[" .. statusText .. "]")
+    buffer.setCursorPos(4, 14)
+    buffer.setTextColor(colors.white)
+    buffer.write("itemname:      ")
+    buffer.setTextColor(colors.gray)
+    buffer.write(tostring(entry.key):sub(1, 25))
+
+    -- Write Status Logic: True if we have a label in DB, else In Progress
+    local isWritten = (dbEntry.label ~= nil and dbEntry.label ~= "Awaiting Meta...")
+    buffer.setCursorPos(4, 16)
+    buffer.setTextColor(colors.white)
+    buffer.write("Write Status:  ")
+    buffer.setTextColor(isWritten and colors.lime or colors.yellow)
+    buffer.write(isWritten and "[Complete]" or "[In Progress]")
+
+    -- Is Managed Logic: Based on target > 0
+    local isManaged = (dbEntry.target or 0) > 0
+    buffer.setCursorPos(4, 17)
+    buffer.setTextColor(colors.white)
+    buffer.write("Is Managed:    ")
+    buffer.setTextColor(isManaged and colors.lime or colors.red)
+    buffer.write(tostring(isManaged))
+else
+    buffer.setCursorPos(4, 13)
+    buffer.setTextColor(colors.lime)
+    buffer.write("Status:        IDLE")
+end
 
 -- =================================================================
 -- TAB 3: STOCK MANAGEMENT (Updated for new itemDB)
