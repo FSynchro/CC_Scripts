@@ -37,7 +37,14 @@ local history = loadTable("job_history.dat")
 local itemDB = loadTable("item_db.dat")
 local activeJobs = {} 
 local translationQueue = {}
-local stats = { completed = 0, failed = 0, managedEnabled = true, queueSize = 0 }
+
+local stats = { 
+    currentItem = "Idle", 
+    writeStatus = "Idle", 
+    queueSize = 0, 
+    managedEnabled = true,
+    failCooldowns = {} 
+}
 
 print("Server v27.0 Online - Precision Mode")
 
