@@ -37,29 +37,8 @@ clone.min https://github.com/FSynchro/CC_Scripts
 
 ⚙️ Setting Up Auto-Start (startup.lua)
 
-To ensure your base monitors and controllers stay online after a server restart, you must create a startup.lua file on each computer. Replace FILENAME.lua with the actual script name for that machine.
-For Sensor & Server Nodes (Headless)
+RUN CC_Sripts/startupmaker, it'll allow you to select the script you want to automatically start, it will create a startup.lua
 
-Run this command on the computer to create the auto-boot file:
-Bash
-
-shell.run("edit startup.lua")
-
-Type the following into the editor:
-Lua
-
-shell.run("cd /AE2NOC") -- or /PowerCTRL depending on the machine
-shell.run("FILENAME.lua")
-
-For Display Nodes (NOC & Power Client)
-
-If you want the computer to automatically clear the terminal and focus on the monitor at boot:
-Lua
-
-term.clear()
-print("Initializing NOC Dashboard...")
-shell.run("cd /AE2NOC")
-shell.run("NOCDisplay.lua")
 
 📋 Requirements
 
