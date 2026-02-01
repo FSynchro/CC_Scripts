@@ -231,18 +231,53 @@ local function renderDebug()
     local itemDB = serverData.itemDB or {}
     local entry = stats.currentEntry
 
-    drawBox(2, 58, 3, 28, "TRANSLATION SCHEDULER", colors.orange)
-    buffer.setCursorPos(4, 5); buffer.setTextColor(colors.white); buffer.write("Queue Size:     " .. (stats.queueSize or 0))
+    -- WINDOW 1: NETWORK STATUS
+    drawBox(2, 58, 3, 10, "MODEM NETWORK STATUS", colors.yellow)
+    local channels = {1422, 1428, 1429}
+    local labels = {[1422]="Cell Data", [1428]="Server Data", [1429]="Feedback"}
+    
+    for i, chan in ipairs(channels) do
+        local log = debugLog[chan] or {lastSeen="Never", status="Waiting"}
+        local yPos = 4 + i
+        buffer.setCursorPos(4, yPos)
+        buffer.setTextColor(colors.cyan); buffer.write(string.format("%-12s", labels[chan]))
+        buffer.setTextColor(colors.white); buffer.write(" | Rx: ")
+        
+        -- Color code status
+        local statCol = log.status == "Active" and colors.lime or colors.red
+        buffer.setTextColor(statCol); buffer.write(string.format("%-8s", log.lastSeen))
+        buffer.setTextColor(colors.gray); buffer.write(" ["..log.status.."]")
+    end
+
+    -- WINDOW 2: TRANSLATION SCHEDULER
+    drawBox(2, 58, 12, 28, "TRANSLATION SCHEDULER", colors.orange)
+    buffer.setCursorPos(4, 14)
+    buffer.setTextColor(colors.white); buffer.write("Queue Size: ")
+    buffer.setTextColor(colors.yellow); buffer.write(tostring(stats.queueSize or 0))
 
     if entry and entry.key then
         local dbEntry = itemDB[entry.key] or {}
-        buffer.setCursorPos(4, 7); buffer.setTextColor(colors.gray); buffer.write("--- Current Entry ---")
-        buffer.setCursorPos(4, 8); buffer.setTextColor(colors.white); buffer.write("Item: "); buffer.setTextColor(colors.yellow); buffer.write(tostring(dbEntry.label or "Awaiting Meta..."):sub(1, 25))
         
+        buffer.setCursorPos(4, 16); buffer.setTextColor(colors.gray); buffer.write("--- Current Entry ---")
+        
+        -- Item Display Name
+        buffer.setCursorPos(4, 18); buffer.setTextColor(colors.white); buffer.write("Item:    ")
+        buffer.setTextColor(colors.lime); buffer.write(tostring(dbEntry.label or "Awaiting Meta..."):sub(1, 35))
+        
+        -- Raw Technical Name (OldName)
+        buffer.setCursorPos(4, 20); buffer.setTextColor(colors.white); buffer.write("OldName: ")
+        buffer.setTextColor(colors.gray); buffer.write(tostring(entry.key):sub(1, 35))
+        
+        -- Write Status Logic
         local isWritten = (dbEntry.label ~= nil and dbEntry.label ~= "Awaiting Meta...")
-        buffer.setCursorPos(4, 10); buffer.write("Write Status:  "); buffer.setTextColor(isWritten and colors.lime or colors.yellow); buffer.write(isWritten and "[Complete]" or "[In Progress]")
+        buffer.setCursorPos(4, 23); buffer.setTextColor(colors.white); buffer.write("Write Status: ")
+        if isWritten then
+            buffer.setTextColor(colors.lime); buffer.write("[COMPLETE]")
+        else
+            buffer.setTextColor(colors.yellow); buffer.write("[IN PROGRESS...]")
+        end
     else
-        buffer.setCursorPos(4, 8); buffer.setTextColor(colors.lime); buffer.write("Status:        IDLE")
+        buffer.setCursorPos(4, 18); buffer.setTextColor(colors.lime); buffer.write("Status:  IDLE (All items translated)")
     end
 end
 
