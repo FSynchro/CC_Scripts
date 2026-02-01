@@ -102,34 +102,37 @@ end
 local function updateStockCache()
     local now = os.epoch("utc") / 1000
     if (now - lastStockRefresh) < 2 then return end
+    lastStockRefresh = now
     
     local itemDB = serverData.itemDB or {}
-    
-    -- 1. SORTED MANAGED LIST (Items where target > 0)
     local managedKeys = {}
+    local craftableList = {}
+    
+    -- 1. Categorize items
     for key, entry in pairs(itemDB) do
+        local label = entry.label or cleanName(key)
+        
         if entry.target and entry.target > 0 then
+            -- Only in Managed
             table.insert(managedKeys, key)
+        elseif entry.isCraftable then
+            -- Only in Craftable if NOT managed
+            table.insert(craftableList, {key = key, label = label})
         end
     end
+    
+    -- 2. Sort Managed Keys (Alphabetical)
     table.sort(managedKeys, function(a, b)
         return (itemDB[a].label or a):lower() < (itemDB[b].label or b):lower()
     end)
-    cachedManagedKeys = managedKeys
-
-    -- 2. SORTED CRAFTABLE LIST (isCraftable = true but target is 0)
-    local craftableList = {}
-    for key, entry in pairs(itemDB) do
-        if entry.isCraftable and (not entry.target or entry.target == 0) then
-            table.insert(craftableList, {key = key, label = entry.label or cleanName(key)})
-        end
-    end
+    
+    -- 3. Sort Craftable List (Alphabetical)
     table.sort(craftableList, function(a, b)
         return a.label:lower() < b.label:lower()
     end)
+    
+    cachedManagedKeys = managedKeys
     cachedCraftableList = craftableList
-
-    lastStockRefresh = now
 end
 
 
@@ -293,41 +296,40 @@ end
 
 local function renderStockControl()
     updateStockCache()
-    local mStart, cStart = managedScroll, stockScroll
     
-    -- Dynamic Headers
-    local mHeader = string.format("MANAGED %d/%d", mStart, #cachedManagedKeys)
-    local cHeader = string.format("CRAFTABLES %d/%d", cStart, #cachedCraftableList)
+    -- Determine visible range based on whether an overlay is open
+    local maxVisible = (uiState.selectedLeft or uiState.selectedRight) and 13 or 18
+    
+    local mStart = math.max(1, math.min(managedScroll, #cachedManagedKeys - maxVisible + 1))
+    local mEnd = math.min(mStart + maxVisible - 1, #cachedManagedKeys)
+    local mHeader = string.format("MANAGED %d-%d/%d", mStart, mEnd, #cachedManagedKeys)
+
+    local cStart = math.max(1, math.min(stockScroll, #cachedCraftableList - maxVisible + 1))
+    local cEnd = math.min(cStart + maxVisible - 1, #cachedCraftableList)
+    local cHeader = string.format("CRAFTABLE %d-%d/%d", cStart, cEnd, #cachedCraftableList)
 
     drawBox(2, 24, 3, 22, mHeader, colors.magenta)
     drawBox(36, 58, 3, 22, cHeader, colors.lightBlue)
 
-    for i = 1, 18 do
-        -- 1. LEFT COLUMN: MANAGED ITEMS
+    -- List Rendering
+    for i = 1, maxVisible do
+        -- Left: Managed
         local mKey = cachedManagedKeys[i + (mStart - 1)]
         if mKey then
-            local entry = serverData.itemDB[mKey] or {}
-            local cur = entry.count or 0
-            local target = entry.target or 0
-            local label = entry.label or cleanName(mKey)
-            
-            -- Logic-based Coloring
-            local textColor = colors.white
-            if entry.isCrafting then textColor = colors.yellow -- Active Job
-            elseif cur < target then textColor = colors.red    -- Understocked
-            elseif cur >= target then textColor = colors.lime  -- Satisfied
-            end
-
+            local entry = serverData.itemDB[mKey]
             buffer.setCursorPos(3, 3 + i)
             buffer.setBackgroundColor(uiState.selectedLeft == mKey and colors.gray or colors.black)
-            buffer.setTextColor(textColor)
             
-            -- Format: ItemName  : 500/1.0k
-            local displayLine = string.format("%-10s:%s/%s", tostring(label):sub(1,10), formatNum(cur), formatNum(target))
-            buffer.write(displayLine)
+            local textColor = colors.white
+            if entry.isCrafting then textColor = colors.yellow 
+            elseif (entry.count or 0) < (entry.target or 0) then textColor = colors.red 
+            else textColor = colors.lime end
+            
+            buffer.setTextColor(textColor)
+            buffer.write(string.format("%-10s:%s/%s", tostring(entry.label or "??"):sub(1,10), formatNum(entry.count or 0), formatNum(entry.target or 0)))
         end
 
-        -- 2. RIGHT COLUMN: CRAFTABLES
+        -- Right: Craftable
         local cItem = cachedCraftableList[i + (cStart - 1)]
         if cItem then
             buffer.setCursorPos(37, 3 + i)
@@ -335,70 +337,50 @@ local function renderStockControl()
             buffer.setTextColor(uiState.selectedRight == cItem.key and colors.yellow or colors.white)
             buffer.write(tostring(cItem.label):sub(1,20))
         end
-        buffer.setBackgroundColor(colors.black)
     end
 
-    -- 3. SELECTION OVERLAY (Lower Boxes)
+    -- Compressed Selection Overlay
     if uiState.selectedLeft or uiState.selectedRight then
         local isL = uiState.selectedLeft ~= nil
         local x1, x2 = isL and 2 or 36, isL and 24 or 58
         local k = isL and uiState.selectedLeft or uiState.selectedRight
         local entry = serverData.itemDB[k] or {}
 
-        -- Clear background for overlay
-        buffer.setBackgroundColor(colors.black)
-        for row = 17, 21 do
-            buffer.setCursorPos(x1, row); buffer.write(string.rep(" ", (x2-x1)+1))
-        end
-
         drawBox(x1, x2, 17, 21, "SELECTED", colors.yellow)
+        buffer.setBackgroundColor(colors.black)
         
-        -- Row 1: Full Name
         buffer.setTextColor(colors.white)
-        renderScrollingText(x1 + 2, 18, 19, entry.label or cleanName(k))
+        renderScrollingText(x1+1, 18, 20, "Name: "..(entry.label or "Unknown"))
         
-        -- Row 2: Status / Info
-        buffer.setCursorPos(x1 + 2, 19)
-        if entry.isCrafting then
-            buffer.setTextColor(colors.yellow); buffer.write("Job: " .. (entry.jobStatus or "Active"))
-        else
-            buffer.setTextColor(colors.gray); buffer.write("ID: " .. k:sub(1, 15))
-        end
-
-        -- Row 3: Quantitative Stock
-        buffer.setCursorPos(x1 + 2, 20)
-        buffer.setTextColor(colors.orange); buffer.write("Stock: ")
-        buffer.setTextColor(colors.white); buffer.write(formatNum(entry.count or 0) .. " / " .. formatNum(entry.target or 0))
+        buffer.setCursorPos(x1+1, 19); buffer.setTextColor(colors.gray)
+        buffer.write("ID: "..k:sub(1, 19))
+        
+        buffer.setCursorPos(x1+1, 20); buffer.setTextColor(colors.orange)
+        buffer.write("Stock: "..formatNum(entry.count or 0))
+        
+        buffer.setCursorPos(x1+1, 21); buffer.setTextColor(colors.lightBlue)
+        buffer.write("Target: "..formatNum(entry.target or 0))
     end
 
-    -- 4. CENTER CONTROLS (Buttons)
+    -- Center Controls
     local mid = 30
-    -- Scroll Arrows
     buffer.setBackgroundColor(colors.gray); buffer.setTextColor(colors.white)
-    buffer.setCursorPos(mid-1, 4); buffer.write("^^"); buffer.setCursorPos(mid-1, 5); buffer.write(" ^")
-    buffer.setCursorPos(mid-1, 7); buffer.write(" v"); buffer.setCursorPos(mid-1, 8); buffer.write("vv")
+    buffer.setCursorPos(mid-1, 4); buffer.write("^^") -- +15
+    buffer.setCursorPos(mid-1, 5); buffer.write(" ^") -- +3
+    buffer.setCursorPos(mid-1, 7); buffer.write(" v") -- -3
+    buffer.setCursorPos(mid-1, 8); buffer.write("vv") -- -15
     
-    -- Adjustment Label
-    buffer.setBackgroundColor(colors.black); buffer.setTextColor(colors.orange)
-    buffer.setCursorPos(27, 14); buffer.write("Adjust"); buffer.setCursorPos(27, 15); buffer.write("Stock")
+    -- Transfer Buttons
+    buffer.setBackgroundColor(colors.blue)
+    buffer.setCursorPos(mid-1, 10); buffer.write("<<") -- Add to Managed
+    buffer.setCursorPos(mid-1, 12); buffer.write(">>") -- Remove from Managed
 
-    -- +/- Grid with labels
+    -- Plus/Minus Buttons (Standard Logic)
     local amounts = {"1", "10", "100", "1k"}
     for i=0, 3 do
         local x = 26 + (i*2)
-        -- Plus Row
-        buffer.setBackgroundColor(colors.green); buffer.setTextColor(colors.white)
-        buffer.setCursorPos(x, 17); buffer.write("+")
-        -- Minus Row
-        buffer.setBackgroundColor(colors.red)
-        buffer.setCursorPos(x, 22); buffer.write("-")
-        -- Vertical labels (1, 1, 0, 1...)
-        buffer.setBackgroundColor(colors.black); buffer.setTextColor(colors.gray)
-        local str = amounts[i+1]
-        for charIdx = 1, #str do
-            buffer.setCursorPos(x, 17 + charIdx)
-            buffer.write(str:sub(charIdx, charIdx))
-        end
+        buffer.setBackgroundColor(colors.green); buffer.setCursorPos(x, 17); buffer.write("+")
+        buffer.setBackgroundColor(colors.red); buffer.setCursorPos(x, 22); buffer.write("-")
     end
 end
 
@@ -466,62 +448,72 @@ local function adjustStock(itemKey, amount)
 end
 
 local function handleMouseClick(event, button, x, y)
-    -- 1. TAB SWITCHING (Top Row)
+    -- 1. TAB SWITCHING
     if y == 1 then
         currentTab = math.min(5, math.floor((x - 1) / 10) + 1)
         refreshUI()
         return
     end
 
-    -- 2. TAB-SPECIFIC INTERACTIONS
     if currentTab == 3 then -- STOCK CONTROL
-        -- Central Scrolling (Arrows at X=29-31)
+        -- SCROLLING LOGIC (Center Strip)
         if x >= 29 and x <= 31 then
-            if y == 4 then managedScroll = math.max(1, managedScroll - 18)     -- Page Up
-            elseif y == 5 then managedScroll = math.max(1, managedScroll - 1)  -- Up 1
-            elseif y == 7 then managedScroll = managedScroll + 1               -- Down 1
-            elseif y == 8 then managedScroll = managedScroll + 18              -- Page Down
+            local scrollAmt = 0
+            if y == 4 then scrollAmt = -15      -- ^^ (Page Up)
+            elseif y == 5 then scrollAmt = -3   -- ^  (Up 3)
+            elseif y == 7 then scrollAmt = 3    -- v  (Down 3)
+            elseif y == 8 then scrollAmt = 15   -- vv (Page Down)
+            end
+            
+            -- Apply scroll to the active side
+            if uiState.selectedRight then
+                stockScroll = math.max(1, stockScroll + scrollAmt)
+            else
+                managedScroll = math.max(1, managedScroll + scrollAmt)
             end
         end
 
-        -- Select Managed Item (Left Column)
-        if x >= 2 and x <= 24 and y >= 4 and y <= 21 then
-            local index = y - 3 + (managedScroll - 1)
-            uiState.selectedLeft = cachedManagedKeys[index]
-            uiState.selectedRight = nil
-        end
-
-        -- Select Craftable Item (Right Column)
-        if x >= 36 and x <= 58 and y >= 4 and y <= 21 then
-            local index = y - 3 + (stockScroll - 1)
-            if cachedCraftableList[index] then
-                uiState.selectedRight = cachedCraftableList[index].key
+        -- TRANSFER LOGIC (<< and >>)
+        if x >= 29 and x <= 31 then
+            if y == 10 and uiState.selectedRight then
+                -- Move Craftable to Managed (Set target to 10)
+                adjustStock(uiState.selectedRight, 10)
+                uiState.selectedLeft = uiState.selectedRight
+                uiState.selectedRight = nil
+            elseif y == 12 and uiState.selectedLeft then
+                -- Remove from Managed (Set target to 0)
+                local currentTarget = serverData.itemDB[uiState.selectedLeft].target or 0
+                adjustStock(uiState.selectedLeft, -currentTarget)
+                uiState.selectedRight = uiState.selectedLeft
                 uiState.selectedLeft = nil
             end
         end
 
-        -- Adjustment Buttons (Plus/Minus)
-        -- Works if EITHER a Managed item OR a Craftable item is selected
-        local activeKey = uiState.selectedLeft or uiState.selectedRight
-        if activeKey then
-            local amounts = {1, 10, 100, 1000}
-            for i = 0, 3 do
-                local btnX = 26 + (i * 2)
-                if x == btnX then
-                    if y == 17 then 
-                        adjustStock(activeKey, amounts[i+1])
-                    elseif y == 22 then 
-                        adjustStock(activeKey, -amounts[i+1]) 
-                    end
+        -- SELECTION LOGIC
+        if y >= 4 and y <= 21 then
+            if x >= 2 and x <= 24 then -- Managed Column
+                local idx = (y - 3) + (managedScroll - 1)
+                uiState.selectedLeft = cachedManagedKeys[idx]
+                uiState.selectedRight = nil
+            elseif x >= 36 and x <= 58 then -- Craftable Column
+                local idx = (y - 3) + (stockScroll - 1)
+                if cachedCraftableList[idx] then
+                    uiState.selectedRight = cachedCraftableList[idx].key
+                    uiState.selectedLeft = nil
                 end
             end
         end
 
-    elseif currentTab == 4 then -- HISTORY
-        -- Clear History Button (matches your previous coordinate)
-        if x >= 40 and x <= 52 and y == 27 then
-            modem.transmit(ORDER_CHAN, REPLY_CHAN, { type = "CLEAR_HISTORY" })
-            serverData.history = {}
+        -- ADJUSTMENT BUTTONS (+ / -)
+        local activeKey = uiState.selectedLeft or uiState.selectedRight
+        if activeKey and (y == 17 or y == 22) then
+            local amounts = {1, 10, 100, 1000}
+            for i = 0, 3 do
+                if x == 26 + (i * 2) then
+                    local change = (y == 17) and amounts[i+1] or -amounts[i+1]
+                    adjustStock(activeKey, change)
+                end
+            end
         end
     end
     
