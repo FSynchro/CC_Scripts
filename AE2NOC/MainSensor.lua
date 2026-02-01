@@ -157,25 +157,31 @@ while true do
 
                 if actualStatus == "finished" then
                     table.remove(activeJobs, i)
-                end
-            else
-                -- Progress update logic
-                -- Note: itemMap is only available if successI was true
-                if successI then
-                    job.progress = (itemMap[job.key] or 0) - job.startCount
-                end
-                job.rawStatus = "running"
-            end
+-- =================================================================
+    -- UPDATED TOTALS & TRANSMISSION (Fixes itemMap nil error)
+    -- =================================================================
+    local totalItemsCount = 0
+    local usedTypesCount = 0
+    
+    -- Calculate totals from our unified DB instead of the old itemMap
+    for _, entry in pairs(itemDB) do
+        if entry.count and entry.count > 0 then
+            totalItemsCount = totalItemsCount + entry.count
+            usedTypesCount = usedTypesCount + 1
         end
     end
 
-    -- CLEANUP LOOP
-    for i = #activeJobs, 1, -1 do
-        if activeJobs[i].expiry and currentTime > activeJobs[i].expiry then
-            table.remove(activeJobs, i)
-        end
-    end
-
+    -- Send the unified sync package
+    modem.transmit(DATA_CHAN, DATA_CHAN, {
+        type = "SERVER_SYNC", 
+        itemDB = itemDB,
+        activeJobs = activeJobs, 
+        history = history, 
+        stats = stats,
+        cpus = cpuData,
+        totalItems = totalItemsCount,  -- Added back for Dash compatibility
+        usedTypes = usedTypesCount     -- Added back for Dash compatibility
+    })
 
 -- =============================================================
     -- BLOCK 7: AUTOCRAFT LOGIC
