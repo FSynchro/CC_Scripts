@@ -8,7 +8,7 @@ local function center(text)
     print(text)
 end
 
--- 1. SLIM ASCII HEADER (Fits 51-char width)
+-- 1. UPDATED FSYNC HEADER
 local function drawHeader()
     term.setBackgroundColor(colors.black)
     term.clear()
@@ -17,11 +17,12 @@ local function drawHeader()
     term.setTextColor(colors.gray)
     print("---------------------------------------------------")
     term.setTextColor(colors.cyan)
-center("  _____  ______     ___   _  ____")
+    center("  _____  ______     ___   _  ____")
     center(" |  ___|/ ___\\ \\   / / \\ | |/ ___|")
     center(" | |_   \\___ \\\\ \\ / /|  \\| | |    ")
     center(" |  _|   ___) |\\ V / | |\\  | |___ ")
-    center(" |_|    |____/  |_|  |_| \\_|\\____|")    
+    center(" |_|    |____/  |_|  |_| \\_|\\____|")
+    
     print("")
     term.setTextColor(colors.yellow)
     center("[ Computer startup configuration utility ]")
@@ -33,7 +34,7 @@ center("  _____  ______     ___   _  ____")
     print("---------------------------------------------------")
 end
 
--- 2. RECURSIVE FILE FINDER (Improved)
+-- 2. RECURSIVE FILE FINDER
 local function getScripts(dir, fileList)
     fileList = fileList or {}
     if not fs.exists(dir) or not fs.isDir(dir) then return fileList end
@@ -46,7 +47,7 @@ local function getScripts(dir, fileList)
             table.insert(fileList, path)
         end
     end
-    table.sort(fileList) -- Keep it tidy
+    table.sort(fileList)
     return fileList
 end
 
@@ -55,10 +56,10 @@ local function drawMenu(scripts, selected)
     drawHeader()
     
     local w, h = term.getSize()
-    -- List display starts after header
+    
     for i, path in ipairs(scripts) do
-        -- Simple scrolling check if list is long
-        if i >= selected - 5 and i <= selected + 5 then
+        -- Scissor the list so it doesn't run off the bottom of the screen
+        if i >= selected - 3 and i <= selected + 3 then
             if i == selected then
                 term.setBackgroundColor(colors.lightGray)
                 term.setTextColor(colors.black)
@@ -73,7 +74,7 @@ local function drawMenu(scripts, selected)
         end
     end
     
-    -- Footer (pinned to bottom)
+    -- Footer
     term.setCursorPos(1, h)
     term.setBackgroundColor(colors.gray)
     term.setTextColor(colors.white)
@@ -107,17 +108,19 @@ while true do
     elseif key == keys.enter then
         local target = scripts[selected]
         local f = fs.open("startup.lua", "w")
-        f.writeLine("-- CCSCRIPTSUTIL CONFIG")
+        f.writeLine("-- FSYNC BOOT CONFIG")
         f.writeLine("shell.run(\"/" .. target .. "\")")
         f.close()
         
+        -- FIXED: Define w and h here before using them
+        local w, h = term.getSize()
         term.setBackgroundColor(colors.blue)
         term.clear()
-        term.setCursorPos(1, h/2)
+        term.setCursorPos(1, math.floor(h/2))
         term.setTextColor(colors.white)
-        center("CONFIGURATION SAVED")
-        center("Rebooting...")
-        sleep(1)
+        center("FSYNC: CONFIGURATION SAVED")
+        center("Rebooting computer...")
+        sleep(1.2)
         os.reboot()
     end
 end
