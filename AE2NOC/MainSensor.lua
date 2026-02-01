@@ -85,7 +85,6 @@ while true do
         -- Reset counts so items gone from AE2 show as 0
         for _, entry in pairs(itemDB) do entry.count = 0 end
 
-        -- NEW: Create a quick lookup map of what's already in the queue
         local queueLookup = {}
         for _, q in ipairs(translationQueue) do 
             queueLookup[q.key] = true 
@@ -99,7 +98,7 @@ while true do
                 itemDB[key] = { label = "Awaiting Meta...", target = 0 }
             end
 
-            -- 2. RECOVERY LOGIC
+            -- 2. RECOVERY LOGIC (Translation Queue)
             if itemDB[key].label == "Awaiting Meta..." and not queueLookup[key] then
                 table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
                 queueLookup[key] = true 
@@ -109,40 +108,44 @@ while true do
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
             
-            -- Update live data
-            itemDB[key].count = it.count
-            itemDB[key].isCraftable = it.isCraftable
-        end
-            -- (The Autocraft Logic below this stays the same...)
-
-            -- Autocraft Logic
+            -- MOVED INSIDE: Autocraft Logic
+            -- This ensures 'it' and 'key' are valid for the current item
             if stats.managedEnabled then
-                local target = itemDB[key].target
+                local target = itemDB[key].target or 0
                 local cooldown = stats.failCooldowns[key] or 0
                 
                 if target > 0 and it.count < target and it.isCraftable then
                     local busy = false
-                    for _, j in pairs(activeJobs) do if j.key == key then busy = true break end end
+                    for _, j in pairs(activeJobs) do 
+                        if j.key == key then busy = true break end 
+                    end
 
                     if not busy and currentTime > cooldown then
                         local ok, itemHandle = pcall(me.findItem, { name = it.name, damage = it.damage or 0 })
                         if ok and itemHandle then
                             local needed = target - it.count
                             local craftOk, handle = pcall(itemHandle.craft, needed)
+                            
                             if craftOk and type(handle) == "table" then
                                 table.insert(activeJobs, {
-                                    handle = handle, key = key, id = os.epoch("utc"), 
-                                    displayName = itemDB[key].label, target = needed, 
-                                    startCount = it.count, progress = 0, startTime = currentTime
+                                    handle = handle, 
+                                    key = key, 
+                                    id = os.epoch("utc"), 
+                                    displayName = itemDB[key].label, 
+                                    target = needed, 
+                                    startCount = it.count, 
+                                    progress = 0, 
+                                    startTime = currentTime
                                 })
                             else
+                                -- Cool down if AE2 can't start the job (e.g. no CPUs)
                                 stats.failCooldowns[key] = currentTime + 10
                             end
                         end
                     end
                 end
             end
-        end
+        end -- End of item loop
     end
 
 -- =============================================================
