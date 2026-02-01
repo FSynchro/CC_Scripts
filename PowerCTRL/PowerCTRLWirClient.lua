@@ -2,7 +2,7 @@
 -- PowerCTRLWirClient.lua - FULL RESTORED VERSION
 -- =================================================================
 local channel = 4335 
-local aeChannel = 1425 
+local aeChannel = 1428  
 local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(n, p) return p.isWireless() end)
 
@@ -155,11 +155,20 @@ while true do
         if p2 == channel then
             if type(p4) == "table" and p4.type == "DATA" then lastData = p4 end
 elseif p2 == aeChannel then
-    if type(p4) == "table" then 
-        -- This must match the 'count' key sent above
-        aeData.yellorium = p4.count or 0 
+    if type(p4) == "table" and p4.type == "SERVER_SYNC" then
+        -- Reset count, then search the items list for Yellorium
+        local foundYello = 0
+        if p4.items then
+            for _, item in ipairs(p4.items) do
+                -- Check for common Yellorium ID. Adjust string if using a different modpack.
+                if item.name == "BigReactors:ingotYellorium" or item.name == "biggerreactors:yellorium_ingot" then
+                    foundYello = foundYello + item.count
+                end
+            end
+        end
+        aeData.yellorium = foundYello
     end
-end        logMsg("RECV", p4)
+    logMsg("RECV", p4)
     elseif ev == "monitor_touch" then
         local x, y = p2, p3
         if y == 1 then
