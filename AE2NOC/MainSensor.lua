@@ -32,6 +32,7 @@ end
 -- Loads databases and initializes the translation queue.
 -- =================================================================
 
+local currentTranslation = nil
 local stockRules = loadTable("autostock.dat")
 local history = loadTable("job_history.dat")
 local itemDB = loadTable("item_db.dat")
@@ -45,7 +46,7 @@ local stats = {
     failCooldowns = {}
 }
 
-print("Server v27.0 Online - Precision Mode")
+print("Server v27.0 Online")
 
 -- =================================================================
 -- BLOCK 4: MAIN CONTROL LOOP
@@ -107,9 +108,11 @@ while true do
         end
     end
 
-    -- Translator Logic
+-- Translator Logic
     if #translationQueue > 0 then
         local nextItem = table.remove(translationQueue, 1)
+        currentTranslation = nextItem -- Store it globally for the sync
+        
         local ok, handle = pcall(me.findItem, { name = nextItem.name, damage = nextItem.damage or 0 })
         if ok and handle then
             local mOk, meta = pcall(handle.getMetadata)
@@ -118,8 +121,11 @@ while true do
                 saveTable("item_db.dat", itemDB)
             end
         end
+    else
+        currentTranslation = nil -- Clear it if the queue is empty
     end
     stats.queueSize = #translationQueue
+    stats.currentEntry = currentTranslation -- Attach to stats for transmission
 
 -- =============================================================
     -- BLOCK 6: JOB MONITORING
