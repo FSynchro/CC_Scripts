@@ -70,13 +70,6 @@ local serverData = { items = {}, activeJobs = {}, rules = {}, stats = {completed
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {}, usedBytes = 0, usedTypes = 0 }
 local debugLog = { [1422] = {lastSeen="Never", status="Waiting"}, [1428] = {lastSeen="Never", status="Waiting"} }
 local selectedHistoryIndex = nil
-local statusMessages = {
-    missing = "Job ended with missing, likely missing ingredients or recipe!",
-    canceled = "Job was manually canceled or system was reset.",
-    stalled = "Job is stalled! Check for machine bottlenecks.",
-    finished = "Job completed Successfully and crafted: %s %s",
-    unknown = "Job in Progress: Crafting: %s (%s/%s)"
-}
 
 local function cleanName(n) 
     if not n or type(n) ~= "string" then return "Unknown Item" end -- Added type check
