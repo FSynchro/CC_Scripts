@@ -243,14 +243,13 @@ local function renderDashboard()
     buffer.write("]")
 end
 
-
 local function renderDebug()
     local stats = serverData.stats or { queueSize = 0, currentEntry = {} }
     local itemDB = serverData.itemDB or {}
     local entry = stats.currentEntry
 
     drawBox(2, 58, 3, 28, "TRANSLATION SCHEDULER", colors.orange)
-    buffer.setCursorPos(4, 5); buffer.setTextColor(colors.white); buffer.write("Queue Size:    " .. (stats.queueSize or 0))
+    buffer.setCursorPos(4, 5); buffer.setTextColor(colors.white); buffer.write("Queue Size:     " .. (stats.queueSize or 0))
 
     if entry and entry.key then
         local dbEntry = itemDB[entry.key] or {}
@@ -264,7 +263,6 @@ local function renderDebug()
     end
 end
 
-
 local function renderStockControl()
     updateStockCache()
     local mStart, cStart = managedScroll, stockScroll
@@ -272,7 +270,7 @@ local function renderStockControl()
     drawBox(36, 58, 3, 22, "CRAFTABLES", colors.lightBlue)
 
     for i = 1, 18 do
-        -- Left Column
+        -- Left Column (Managed)
         local mKey = cachedManagedKeys[i + (mStart - 1)]
         if mKey then
             local stats = cachedManagedStatus[mKey] or {cur=0, target=0, color=colors.white}
@@ -280,7 +278,7 @@ local function renderStockControl()
             buffer.setCursorPos(3, 3 + i); buffer.setBackgroundColor(uiState.selectedLeft == mKey and colors.gray or colors.black)
             buffer.setTextColor(stats.color); buffer.write(string.format("%-10s:%s/%s", tostring(label):sub(1,10), formatNum(stats.cur), formatNum(stats.target)))
         end
-        -- Right Column
+        -- Right Column (Craftable)
         local cItem = cachedCraftableList[i + (cStart - 1)]
         if cItem then
             buffer.setCursorPos(37, 3 + i); buffer.setBackgroundColor(uiState.selectedRight == cItem.key and colors.gray or colors.black)
@@ -298,7 +296,7 @@ local function renderStockControl()
         renderScrollingText(x1 + 2, 18, 19, (serverData.itemDB[k] and serverData.itemDB[k].label or cleanName(k)))
     end
 
-    -- Adjustment Buttons
+    -- Scroll & Adjustment UI
     local mid = 30
     buffer.setBackgroundColor(colors.gray); buffer.setCursorPos(mid-1, 4); buffer.write("^^"); buffer.setCursorPos(mid-1, 8); buffer.write("vv")
     local amounts = {"1", "10", "100", "1k"}
@@ -339,29 +337,92 @@ local function renderStorage()
 end
 
 -- =================================================================
--- INTERACTION & MODEM HANDLER
+-- BLOCK 5: INPUT & LOGIC HELPERS
 -- =================================================================
+
+local function adjustStock(itemKey, amount)
+    if not itemKey then return end
+    modem.transmit(1428, 1428, { type = "ADJUST_STOCK", key = itemKey, delta = amount })
+    if serverData.itemDB[itemKey] then
+        serverData.itemDB[itemKey].target = (serverData.itemDB[itemKey].target or 0) + amount
+    end
+end
+
+local function handleMouseClick(event, button, x, y)
+    -- 1. TAB SWITCHING (Top Row)
+    if y == 1 then
+        currentTab = math.min(5, math.floor((x - 1) / 10) + 1)
+        refreshUI()
+        return
+    end
+
+    -- 2. TAB-SPECIFIC INTERACTIONS
+    if currentTab == 3 then -- STOCK CONTROL
+        -- Scroll Managed List (Left)
+        if x >= 29 and x <= 31 then
+            if y == 4 and managedScroll > 1 then managedScroll = managedScroll - 1
+            elseif y == 8 then managedScroll = managedScroll + 1 end
+        end
+
+        -- Select Managed Item (Left Column)
+        if x >= 2 and x <= 24 and y >= 4 and y <= 21 then
+            local index = y - 3 + (managedScroll - 1)
+            uiState.selectedLeft = cachedManagedKeys[index]
+            uiState.selectedRight = nil
+        end
+
+        -- Select Craftable Item (Right Column)
+        if x >= 36 and x <= 58 and y >= 4 and y <= 21 then
+            local index = y - 3 + (stockScroll - 1)
+            if cachedCraftableList[index] then
+                uiState.selectedRight = cachedCraftableList[index].key
+                uiState.selectedLeft = nil
+            end
+        end
+
+        -- Adjustment Buttons (Plus/Minus)
+        if uiState.selectedLeft then
+            local amounts = {1, 10, 100, 1000}
+            for i = 0, 3 do
+                local btnX = 26 + (i * 2)
+                if x == btnX then
+                    if y == 17 then adjustStock(uiState.selectedLeft, amounts[i+1])
+                    elseif y == 22 then adjustStock(uiState.selectedLeft, -amounts[i+1]) end
+                end
+            end
+        end
+
+    elseif currentTab == 4 then -- HISTORY
+        if x >= 40 and x <= 52 and y == 27 then
+            serverData.history = {}
+        end
+    end
+    refreshUI()
+end
+
+-- =================================================================
+-- BLOCK 6: MAIN EXECUTION LOOP
+-- =================================================================
+
+local scrollTimer = os.startTimer(0.5)
+refreshUI()
+
 while true do
-    local ev, side, p1, p2, msg = os.pullEvent()
+    local eventData = {os.pullEvent()}
+    local ev = eventData[1]
     
-    if ev == "timer" and side == scrollTimer then
+    if ev == "mouse_click" or ev == "monitor_touch" then
+        handleMouseClick(unpack(eventData))
+        
+    elseif ev == "timer" and eventData[2] == scrollTimer then
         scrollPos = scrollPos + 1
         scrollTimer = os.startTimer(0.5) 
         refreshUI()
         
-    elseif ev == "monitor_touch" then
-        local tx, ty = p1, p2
-        if ty == 1 then
-            currentTab = math.min(5, math.floor((tx - 1) / 10) + 1)
-        elseif currentTab == 3 then
-            -- Handle Scrolling, Rule Transfers (+/-), and Selections
-            -- [Logic block remains consistent with your input]
-        end
-        refreshUI()
-
     elseif ev == "modem_message" then
+        local p1, msg = eventData[3], eventData[5]
         if type(msg) == "table" then
-            -- 1. Storage Cell Updates (Channel 1422)
+            -- Storage Cell Updates
             if p1 == 1422 and msg.items then
                 storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
                 for _, it in ipairs(msg.items) do
@@ -369,12 +430,11 @@ while true do
                         local cap = (type(driveSpecs[it.name]) == "table") and (driveSpecs[it.name][it.damage] or 0) or driveSpecs[it.name]
                         local label = it.name:match("storage_cell_(%d+k)") or "1k"
                         storageData.maxBytes = storageData.maxBytes + (cap * it.count)
-                        storageData.maxTypes = storageData.maxTypes + (63 * it.count)
                         storageData.counts[label] = (storageData.counts[label] or 0) + it.count
                     end
                 end
 
-            -- 2. Unified Data Sync (Channel 1428)
+            -- Unified Data Sync
             elseif p1 == 1428 then 
                 serverData.itemDB = msg.itemDB or {}
                 serverData.activeJobs = msg.activeJobs or {}
@@ -382,7 +442,6 @@ while true do
                 serverData.stats = msg.stats or {}
                 serverData.cpus = msg.cpus or {}
                 
-                -- Rebuild flattened items list for the UI from the new DB
                 local newList = {}
                 for key, data in pairs(serverData.itemDB) do
                     data.key = key 
