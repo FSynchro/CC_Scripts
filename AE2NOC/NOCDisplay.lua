@@ -692,4 +692,3 @@ elseif ev == "modem_message" then
             refreshUI()
         end
     end
-end
