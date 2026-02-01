@@ -337,3 +337,4 @@ if msg.type == "SET_RULE" then
         end 
     end
 end
+end
