@@ -96,23 +96,23 @@ while true do
             
             -- 1. Initialize item in DB
             if not itemDB[key] then
-                itemDB[key] = { label = "Awaiting Meta..." }
+                itemDB[key] = { label = "Awaiting Meta...", target = 0 }
             end
 
-            -- 2. RECOVERY LOGIC (FIXED)
-            -- We check 'queueLookup' instead of running a second 'for' loop
+            -- 2. RECOVERY LOGIC
             if itemDB[key].label == "Awaiting Meta..." and not queueLookup[key] then
                 table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
-                queueLookup[key] = true -- Mark as added so we don't add it again this cycle
+                queueLookup[key] = true 
             end
 
             -- Update itemDB state
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
+            
+            -- Set target if it's a brand new item from stockRules
             if itemDB[key].target == nil then
                 itemDB[key].target = stockRules[key] or 0
             end
-            itemDB[key].managed = (itemDB[key].target > 0)
             
             -- (The Autocraft Logic below this stays the same...)
 
@@ -310,29 +310,29 @@ end
         usedTypes = usedTypesCount
     })
 
-    -- =============================================================
+-- =============================================================
     -- BLOCK 9: EVENT LISTENER
     -- =============================================================
     local pulseTimer = os.startTimer(2.0)
     while true do
         local event, side, chan, replyChan, msg = os.pullEvent()
+        
         if event == "timer" and side == pulseTimer then 
-            break 
+            break -- Time to refresh the main loop
+            
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
+            -- All remote commands go inside this section
             if msg.type == "SET_RULE" then 
                 if itemDB[msg.name] then
-                    -- Force target to be a number and at least 0
                     itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
                     saveTable("item_db.dat", itemDB) 
                 end
-                
-        elseif msg.type == "TOGGLE_MGMT" then 
-             -- This is the "Master Kill Switch" for the whole server
+            elseif msg.type == "TOGGLE_MGMT" then 
                 stats.managedEnabled = not stats.managedEnabled
             elseif msg.type == "CLEAR_HISTORY" then 
                 history = {}
                 saveTable("job_history.dat", history) 
             end
-        end
+            -- End of message type checks
+        end 
     end
-end
