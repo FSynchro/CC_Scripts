@@ -158,12 +158,16 @@ local function updateStockCache()
     -- 3. SORTED CRAFTABLE LIST (Right Side)
     local newList = {}
     for _, it in ipairs(items) do
-        local k = it.name .. ":" .. (it.damage or 0)
-        -- Only add if it's craftable AND not already in our rules
-        if it.isCraftable and not rules[k] then 
-            local raw = itemDB[k] or it.label or cleanName(it.name)
-            local dName = type(raw) == "table" and raw.label or raw
-            table.insert(newList, {key=k, label=dName}) 
+        -- FIX: Skip if the item entry is nil or missing a name
+        if it and it.name then 
+            local k = it.name .. ":" .. (it.damage or 0)
+            
+            -- Only add if it's craftable AND not already in our rules
+            if it.isCraftable and not rules[k] then 
+                local raw = itemDB[k] or it.label or cleanName(it.name)
+                local dName = type(raw) == "table" and raw.label or raw
+                table.insert(newList, {key=k, label=dName}) 
+            end
         end
     end
     table.sort(newList, function(a, b) 
