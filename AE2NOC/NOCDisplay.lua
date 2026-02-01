@@ -240,7 +240,11 @@ local function renderDebug()
     -- WINDOW 1: NETWORK STATUS
     drawBox(2, 58, 3, 10, "MODEM NETWORK STATUS", colors.yellow)
     local channels = {1422, 1428, 1429}
-    local labels = {[1422]="Cell Data", [1428]="Server Data", [1429]="Feedback"}
+local labels = {
+    [1422] = "Cell Sync",    -- External storage cell reader
+    [1428] = "System Data",  -- Main server broadcast (CPUs, Items, Jobs)
+    [1429] = "Command Bus"   -- Your UI-to-Server instructions
+}
     
     for i, chan in ipairs(channels) do
         local log = debugLog[chan] or {lastSeen="Never", status="Waiting"}
@@ -381,7 +385,14 @@ end
 
 local function adjustStock(itemKey, amount)
     if not itemKey then return end
-    modem.transmit(1428, 1428, { type = "ADJUST_STOCK", key = itemKey, delta = amount })
+    modem.transmit(1429, 1428, { type = "ADJUST_STOCK", key = itemKey, delta = amount })
+    
+    -- Log that we just used the Command Channel
+    if debugLog[1429] then
+        debugLog[1429].lastSeen = os.date("%H:%M:%S")
+        debugLog[1429].status = "Sent Cmd"
+    end
+
     if serverData.itemDB[itemKey] then
         serverData.itemDB[itemKey].target = (serverData.itemDB[itemKey].target or 0) + amount
     end
