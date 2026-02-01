@@ -176,23 +176,6 @@ end
 -- =================================================================
 -- BLOCK 4: TAB RENDERING (MAIN UI REFRESH)
 -- =================================================================
-local function refreshUI()
-    buffer.setVisible(false)
-    buffer.setBackgroundColor(colors.black)
-    buffer.clear()
-    drawTabs()
-
-    if currentTab == 1 then renderDashboard()
-    elseif currentTab == 2 then renderDebug()
-    elseif currentTab == 3 then renderStockControl()
-    elseif currentTab == 4 then renderHistory()
-    elseif currentTab == 5 then renderStorage()
-    end
-    buffer.setVisible(true)
-end
-
-
-
 
 local function renderDashboard()
     local jobs = serverData.activeJobs or {}
@@ -334,6 +317,21 @@ local function renderStorage()
         buffer.setTextColor(colors.white); buffer.write(label:sub(1,3).." Cell: ")
         buffer.setTextColor(colors.lime);  buffer.write("["..storageData.counts[label].."]")
     end
+end
+
+local function refreshUI()
+    buffer.setVisible(false)
+    buffer.setBackgroundColor(colors.black)
+    buffer.clear()
+    drawTabs()
+
+    if currentTab == 1 then renderDashboard()
+    elseif currentTab == 2 then renderDebug()
+    elseif currentTab == 3 then renderStockControl()
+    elseif currentTab == 4 then renderHistory()
+    elseif currentTab == 5 then renderStorage()
+    end
+    buffer.setVisible(true)
 end
 
 -- =================================================================
