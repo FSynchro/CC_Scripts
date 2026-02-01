@@ -234,24 +234,30 @@ while true do
     if cpuData.total > 0 then cpuData.avgCoPro = cpuData.totalCoPro / cpuData.total end
 
     
-    local totalItemsCount = 0
+local totalItemsCount = 0
     local usedTypesCount = 0
-    if successI and rawItems then
-        usedTypesCount = #rawItems -- Each entry in the list is a unique type
-        for _, it in ipairs(rawItems) do
-            totalItemsCount = totalItemsCount + it.count
+    
+    for _, entry in pairs(itemDB) do
+        if entry.count > 0 then
+            totalItemsCount = totalItemsCount + entry.count
+            usedTypesCount = usedTypesCount + 1
         end
     end
 
+    stats.totalItems = totalItemsCount
+    stats.usedTypes = usedTypesCount
+    
+
+-- =================================================================
+    -- UPDATED BLOCK 8: TRANSMISSION
+    -- =================================================================
     modem.transmit(DATA_CHAN, DATA_CHAN, {
         type = "SERVER_SYNC", 
         itemDB = itemDB,
         activeJobs = activeJobs, 
         history = history, 
         stats = stats,
-        cpus = cpuData,
-        totalItems = totalItemsCount,
-        usedTypes = usedTypesCount
+        cpus = cpuData
     })
 
     -- =============================================================
