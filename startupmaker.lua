@@ -107,20 +107,37 @@ while true do
         break
     elseif key == keys.enter then
         local target = scripts[selected]
+        
+        -- WRITING THE NEW AUTO-UPDATING STARTUP SCRIPT
         local f = fs.open("startup.lua", "w")
-        f.writeLine("-- FSYNC BOOT CONFIG")
-        f.writeLine("shell.run(\"/" .. target .. "\")")
+        f.writeLine("-- FSYNC AUTO-UPDATING BOOT")
+        f.writeLine("print('Checking for updates...')")
+        
+        -- Delete the old folder to ensure a clean clone
+        f.writeLine("if fs.exists('" .. rootDir .. "') then fs.delete('" .. rootDir .. "') end")
+        
+        -- Clone the repo (Assumes clone.min is already on the computer)
+        f.writeLine("shell.run('clone.min https://github.com/FSynchro/CC_Scripts')")
+        
+        -- Run the selected script
+        f.writeLine("if fs.exists('" .. target .. "') then")
+        f.writeLine("  shell.run('" .. target .. "')")
+        f.writeLine("else")
+        f.writeLine("  print('Error: Target script not found after update.')")
+        f.writeLine("  print('Path: " .. target .. "')")
+        f.writeLine("end")
         f.close()
         
-        -- FIXED: Define w and h here before using them
+        -- UI Confirmation
         local w, h = term.getSize()
         term.setBackgroundColor(colors.blue)
         term.clear()
         term.setCursorPos(1, math.floor(h/2))
         term.setTextColor(colors.white)
-        center("FSYNC: CONFIGURATION SAVED")
+        center("FSYNC: AUTO-UPDATE ENABLED")
+        center("Script: " .. fs.getName(target))
         center("Rebooting computer...")
-        sleep(1.2)
+        sleep(1.5)
         os.reboot()
     end
 end
