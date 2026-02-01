@@ -267,32 +267,45 @@ buffer.write(tostring(totalEntries))
         buffer.setCursorPos(32, 22); buffer.write(" [MANAGE STOCK] ")
         buffer.setBackgroundColor(colors.black)
 
--- TAB 2: DEBUG & TRANSLATION
-    elseif currentTab == 2 then
-        drawBox(2, 56, 3, 28, "SYSTEM DIAGNOSTICS", colors.yellow)
-        local r = 5
-        
-        -- 1. System Logs (Modem Channels)
-        for chan, d in pairs(debugLog) do
-            buffer.setCursorPos(4, r); buffer.setTextColor(colors.cyan); buffer.write("CH "..chan..": ")
-            buffer.setTextColor(d.status == "ONLINE" and colors.lime or colors.red); buffer.write(d.status)
-            buffer.setCursorPos(4, r+1); buffer.setTextColor(colors.gray); buffer.write(" Last RX: "..d.lastSeen)
-            r = r + 3
-        end
+-- Inside NOCDisplay.lua, in your draw loop for Tab 2 (Stock)
+if currentTab == 2 then
+    local itemDB = serverData.itemDB or {}
+    local yOff = 4 -- Starting Y position for the list
 
-        -- 2. Data Preparation
-        local s = serverData.stats or {}
-        local db = serverData.itemDB or {}
-        local currentKey = s.currentItem or "Idle"
-        local entry = stats.currentEntry
+    for i = 1, #cachedManagedKeys do
+        local key = cachedManagedKeys[i]
+        local item = itemDB[key]
         
-        -- Pull friendly name from the DB using the currentKey
-        local friendlyName = "N/A"
-        if currentKey == "Idle" then
-            friendlyName = "System Idle"
-        elseif db[currentKey] then
-            friendlyName = db[currentKey].label or "Unknown"
+        if item then
+            -- 1. DETERMINE COLOR & STATUS
+            local textColor = colors.white
+            local statusText = ""
+
+            if item.isCrafting then
+                textColor = colors.cyan  -- Cyan for active jobs
+                statusText = item.friendlyStatus or "Crafting..."
+            elseif (item.count or 0) < (item.target or 0) then
+                textColor = colors.red   -- Red for low stock
+            else
+                textColor = colors.green -- Green for healthy stock
+            end
+
+            -- 2. DRAW THE LINE
+            -- Format: [Count / Target] Label
+            local line = string.format("[%d/%d] %s", item.count or 0, item.target or 0, item.label or "Unknown")
+            
+            buffer.write(2, yOff + i, line, textColor)
+            
+            -- 3. DRAW STATUS TEXT (If crafting, show it on the right)
+            if statusText ~= "" then
+                buffer.write(30, yOff + i, statusText, colors.gray)
+            end
         end
+        
+        -- Prevent drawing off screen
+        if (yOff + i) > 18 then break end
+    end
+end
 
 -- =============================================================
 -- DEBUG TAB RENDERING (NOCDisplay.lua)
