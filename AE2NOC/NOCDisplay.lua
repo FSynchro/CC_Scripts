@@ -48,6 +48,22 @@ local function drawBar(x, y, width, current, max)
     buffer.write(math.floor(progress * 100) .. "%")
 end
 
+local function formatStorage(n)
+    if not n or n == 0 then return "0" end
+    if n < 1000 then return tostring(n) end
+    local units = {"k", "m", "b", "t"}
+    for i = #units, 1, -1 do
+        local value = 10^(i * 3)
+        if n >= value then
+            local res = n / value
+            return (res % 1 == 0 and ("%d%s"):format(res, units[i]) or ("%.1f%s"):format(res, units[i]))
+        end
+    end
+    return tostring(n)
+end
+
+
+
 local driveSpecs = {
     ["appliedenergistics2:storage_cell_1k"] = 1024,
     ["appliedenergistics2:storage_cell_4k"] = 4096,
@@ -569,7 +585,7 @@ while true do
     local eventData = {os.pullEvent()}
     local ev = eventData[1]
     
-    if ev == "mouse_click" or ev == "monitor_touch" then
+if ev == "mouse_click" or ev == "monitor_touch" then
         handleMouseClick(unpack(eventData))
         
     elseif ev == "timer" and eventData[2] == scrollTimer then
@@ -583,6 +599,7 @@ while true do
             debugLog[p1].lastSeen = os.date("%H:%M:%S")
             debugLog[p1].status = "Active"
         end
+
         if type(msg) == "table" then
             -- Storage Cell Updates
             if p1 == 1422 and msg.items then
@@ -596,20 +613,21 @@ while true do
                     end
                 end
 
-            -- Unified Data Sync
+            -- Unified Data Sync (Channel 1428)
             elseif p1 == 1428 then 
                 serverData.itemDB = msg.itemDB or {}
                 serverData.activeJobs = msg.activeJobs or {}
-                serverData.history = msg.history or {}
                 serverData.stats = msg.stats or {}
-                serverData.cpus = msg.cpus or {}
                 
+                -- Rebuild the sorted list for the UI
                 local newList = {}
                 for key, data in pairs(serverData.itemDB) do
                     data.key = key 
                     table.insert(newList, data)
                 end
-                table.sort(newList, function(a, b) return (a.label or "") < (b.label or "") end)
+                table.sort(newList, function(a, b) 
+                    return (a.label or "") < (b.label or "") 
+                end)
                 serverData.items = newList
             end
             refreshUI()
