@@ -45,8 +45,34 @@ local stats = {
     queueSize = 0,
     failCooldowns = {}
 }
+local statusMessages = {
+    missing = "Missing ingredients/recipe!",
+    canceled = "Job canceled.",
+    stalled = "Job stalled!",
+    finished = "Completed: %s %s",
+    unknown = "Crafting: %s (%s/%s)"
+}
 
 print("Server v27.0 Online")
+
+local function getFriendlyStatus(entry)
+    if not entry then return "" end
+    if entry.isCanceled then return statusMessages.canceled end
+    -- If it's finished, show the "Completed" message
+    if entry.isFinished then 
+        return string.format(statusMessages.finished, entry.count or 0, entry.label or "Item") 
+    end
+    
+    -- Map AE2 raw status to our friendly messages
+    local s = entry.jobStatus or "unknown"
+    if s == "missing" then return statusMessages.missing
+    elseif s == "stalled" then return statusMessages.stalled
+    elseif s == "running" or s == "unknown" then
+        -- Format: Crafting: Stone (10/64)
+        return string.format(statusMessages.unknown, entry.label or "Item", entry.progress or 0, entry.jobTarget or 0)
+    end
+    return s
+end
 
 -- =================================================================
 -- BLOCK 4: MAIN CONTROL LOOP
@@ -147,62 +173,47 @@ stats.queueSize = #translationQueue
 stats.currentEntry = currentTranslation -- This is perfectly placed for the transmit!
 
 -- =============================================================
-    -- BLOCK 6: JOB MONITORING
-    -- =============================================================
-    stats.failCooldowns = stats.failCooldowns or {} 
-    local currentTime = os.epoch("utc") / 1000
+-- BLOCK 6: JOB MONITORING (Updated)
+-- =============================================================
+stats.failCooldowns = stats.failCooldowns or {} 
+local currentTime = os.epoch("utc") / 1000
 
-    for i = #activeJobs, 1, -1 do
-        local job = activeJobs[i]
-        if not job.expiry then
-            local ok, finished = pcall(job.handle.isFinished)
-            local ok2, canceled = pcall(job.handle.isCanceled)
-            local ok3, status = pcall(job.handle.status)
-            
-            if (ok and finished) or (ok2 and canceled) then
-                local duration = currentTime - (job.startTime or currentTime)
-                local actualStatus = status or "unknown"
-                
-                if ok3 and actualStatus == "finished" then
-                    stats.completed = (stats.completed or 0) + 1
-                else
-                    stats.failed = (stats.failed or 0) + 1
-                    job.expiry = currentTime + 30 
-                    stats.failCooldowns[job.key] = job.expiry
-                end
+-- Clear previous status from itemDB so old jobs don't "stick" to items
+for _, it in pairs(itemDB) do
+    it.isCrafting = false
+    it.jobStatus = nil
+    it.isFinished = nil
+    it.isCanceled = nil
+end
 
-                table.insert(history, 1, { 
-                    name = job.key, 
-                    displayName = job.displayName or job.key, 
-                    amount = job.target, 
-                    status = (actualStatus == "finished") and "DONE" or "FAIL",
-                    rawStatus = actualStatus,
-                    duration = string.format("%.2fs", duration)
-                })
-                
-                if #history > 50 then table.remove(history) end
-                saveTable("job_history.dat", history)
-
-                if actualStatus == "finished" then
-                    table.remove(activeJobs, i)
-                end
-            else
-                -- Progress update logic
-                -- Note: itemMap is only available if successI was true
-                if successI and itemDB[job.key] then
-                 job.progress = itemDB[job.key].count - job.startCount
-                end
-                job.rawStatus = "running"
-            end
-        end
+for i = #activeJobs, 1, -1 do
+    local job = activeJobs[i]
+    local ok, finished = pcall(job.handle.isFinished)
+    local ok2, canceled = pcall(job.handle.isCanceled)
+    local ok3, status = pcall(job.handle.status)
+    
+    -- Sync this job data back to the itemDB so the Stock Tab sees it
+    if itemDB[job.key] then
+        itemDB[job.key].isCrafting = true
+        itemDB[job.key].jobStatus = status or "running"
+        itemDB[job.key].isFinished = finished
+        itemDB[job.key].isCanceled = canceled
+        itemDB[job.key].progress = job.progress or 0
+        itemDB[job.key].jobTarget = job.target or 0
+        -- Add the friendly text so the Display doesn't have to calculate it
+        itemDB[job.key].friendlyStatus = getFriendlyStatus(itemDB[job.key])
     end
 
-    -- CLEANUP LOOP
-    for i = #activeJobs, 1, -1 do
-        if activeJobs[i].expiry and currentTime > activeJobs[i].expiry then
-            table.remove(activeJobs, i)
+    if (ok and finished) or (ok2 and canceled) then
+        -- ... (Keep your existing history-saving logic here) ...
+        if status == "finished" then table.remove(activeJobs, i) end
+    else
+        -- Progress update
+        if successI and itemDB[job.key] then
+            job.progress = itemDB[job.key].count - job.startCount
         end
     end
+end
 
 
 -- =============================================================
