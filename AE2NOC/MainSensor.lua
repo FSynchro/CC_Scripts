@@ -59,15 +59,26 @@ while true do
         -- Reset counts so items gone from AE2 show as 0
         for _, entry in pairs(itemDB) do entry.count = 0 end
 
-        for _, it in ipairs(rawItems) do
-            local key = it.name .. ":" .. (it.damage or 0)
-            
-            -- Initialize item in DB if it's new
-            if not itemDB[key] then
-                 itemDB[key] = { label = it.label or "Awaiting Meta..." }
-                 table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
-            end
+-- Update this section in Block 4:
+for _, it in ipairs(rawItems) do
+    local key = it.name .. ":" .. (it.damage or 0)
+    
+    -- 1. Initialize item in DB if it's completely new
+    if not itemDB[key] then
+        itemDB[key] = { label = "Awaiting Meta..." }
+    end
+    -- 2. RECOVERY LOGIC: If it's in the DB but hasn't been translated, 
+    -- and it's NOT already in the queue, add it.
+    local inQueue = false
+    for _, q in ipairs(translationQueue) do
+        if q.key == key then inQueue = true break end
+    end
 
+    if itemDB[key].label == "Awaiting Meta..." and not inQueue then
+        table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+    end
+
+            
             -- Update itemDB state
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
@@ -108,24 +119,32 @@ while true do
         end
     end
 
--- Translator Logic
-    if #translationQueue > 0 then
-        local nextItem = table.remove(translationQueue, 1)
-        currentTranslation = nextItem -- Store it globally for the sync
-        
-        local ok, handle = pcall(me.findItem, { name = nextItem.name, damage = nextItem.damage or 0 })
-        if ok and handle then
-            local mOk, meta = pcall(handle.getMetadata)
-            if mOk and meta and meta.displayName then
-                if itemDB[nextItem.key] then itemDB[nextItem.key].label = meta.displayName end
-                saveTable("item_db.dat", itemDB)
+-- =============================================================
+-- Translator Logic (Updated for clean Display Sync)
+-- =============================================================
+if #translationQueue > 0 then
+    -- Peek at the next item without removing it yet so we can process it
+    local nextItem = translationQueue[1]
+    currentTranslation = nextItem 
+    
+    local ok, handle = pcall(me.findItem, { name = nextItem.name, damage = nextItem.damage or 0 })
+    if ok and handle then
+        local mOk, meta = pcall(handle.getMetadata)
+        if mOk and meta and meta.displayName then
+            -- Success! Update DB and remove from queue
+            if itemDB[nextItem.key] then 
+                itemDB[nextItem.key].label = meta.displayName 
             end
+            saveTable("item_db.dat", itemDB)
+            table.remove(translationQueue, 1) -- Only remove once we have the data
         end
-    else
-        currentTranslation = nil -- Clear it if the queue is empty
     end
-    stats.queueSize = #translationQueue
-    stats.currentEntry = currentTranslation -- Attach to stats for transmission
+else
+    currentTranslation = nil 
+end
+
+stats.queueSize = #translationQueue
+stats.currentEntry = currentTranslation -- This is perfectly placed for the transmit!
 
 -- =============================================================
     -- BLOCK 6: JOB MONITORING
