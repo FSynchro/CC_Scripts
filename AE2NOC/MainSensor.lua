@@ -85,35 +85,36 @@ while true do
         -- Reset counts so items gone from AE2 show as 0
         for _, entry in pairs(itemDB) do entry.count = 0 end
 
--- Update this section in Block 4:
-for _, it in ipairs(rawItems) do
-    local key = it.name .. ":" .. (it.damage or 0)
-    
-    -- 1. Initialize item in DB if it's completely new
-    if not itemDB[key] then
-        itemDB[key] = { label = "Awaiting Meta..." }
-    end
-    -- 2. RECOVERY LOGIC: If it's in the DB but hasn't been translated, 
-    -- and it's NOT already in the queue, add it.
-    local inQueue = false
-    for _, q in ipairs(translationQueue) do
-        if q.key == key then inQueue = true break end
-    end
+        -- NEW: Create a quick lookup map of what's already in the queue
+        local queueLookup = {}
+        for _, q in ipairs(translationQueue) do 
+            queueLookup[q.key] = true 
+        end
 
-    if itemDB[key].label == "Awaiting Meta..." and not inQueue then
-        table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
-    end
-
+        for _, it in ipairs(rawItems) do
+            local key = it.name .. ":" .. (it.damage or 0)
             
+            -- 1. Initialize item in DB
+            if not itemDB[key] then
+                itemDB[key] = { label = "Awaiting Meta..." }
+            end
+
+            -- 2. RECOVERY LOGIC (FIXED)
+            -- We check 'queueLookup' instead of running a second 'for' loop
+            if itemDB[key].label == "Awaiting Meta..." and not queueLookup[key] then
+                table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+                queueLookup[key] = true -- Mark as added so we don't add it again this cycle
+            end
+
             -- Update itemDB state
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
-            -- Only use stockRules if target isn't already set in itemDB
-            -- Migration: If itemDB doesn't have a target yet, pull from old stockRules
-              if itemDB[key].target == nil then
-                  itemDB[key].target = stockRules[key] or 0
-              end
+            if itemDB[key].target == nil then
+                itemDB[key].target = stockRules[key] or 0
+            end
             itemDB[key].managed = (itemDB[key].target > 0)
+            
+            -- (The Autocraft Logic below this stays the same...)
 
             -- Autocraft Logic
             if stats.managedEnabled then
@@ -146,10 +147,12 @@ for _, it in ipairs(rawItems) do
     end
 
 -- =============================================================
--- Translator Logic (Updated for clean Display Sync)
+-- Translator Logic (BATCH MODE - MUCH FASTER)
 -- =============================================================
-if #translationQueue > 0 then
-    -- Peek at the next item without removing it yet so we can process it
+local batchSize = 15 -- How many items to translate per loop
+local processedThisCycle = 0
+
+while #translationQueue > 0 and processedThisCycle < batchSize do
     local nextItem = translationQueue[1]
     currentTranslation = nextItem 
     
@@ -157,20 +160,29 @@ if #translationQueue > 0 then
     if ok and handle then
         local mOk, meta = pcall(handle.getMetadata)
         if mOk and meta and meta.displayName then
-            -- Success! Update DB and remove from queue
             if itemDB[nextItem.key] then 
                 itemDB[nextItem.key].label = meta.displayName 
             end
-            saveTable("item_db.dat", itemDB)
-            table.remove(translationQueue, 1) -- Only remove once we have the data
+            table.remove(translationQueue, 1)
+            processedThisCycle = processedThisCycle + 1
+        else
+            -- If metadata fails, move it to the end of the queue so it doesn't block others
+            table.insert(translationQueue, table.remove(translationQueue, 1))
+            processedThisCycle = processedThisCycle + 1
         end
+    else
+        -- Item might have been removed from AE2, skip it
+        table.remove(translationQueue, 1)
     end
-else
-    currentTranslation = nil 
+end
+
+-- Save only once after the batch is done to prevent disk lag
+if processedThisCycle > 0 then
+    saveTable("item_db.dat", itemDB)
 end
 
 stats.queueSize = #translationQueue
-stats.currentEntry = currentTranslation -- This is perfectly placed for the transmit!
+stats.currentEntry = currentTranslation
 
 -- =============================================================
 -- BLOCK 6: JOB MONITORING (Updated)
@@ -313,6 +325,7 @@ end
                     itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
                     saveTable("item_db.dat", itemDB) 
                 end
+                
         elseif msg.type == "TOGGLE_MGMT" then 
              -- This is the "Master Kill Switch" for the whole server
                 stats.managedEnabled = not stats.managedEnabled
