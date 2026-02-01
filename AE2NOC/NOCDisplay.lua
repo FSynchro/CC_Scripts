@@ -379,7 +379,7 @@ if uiState.selectedLeft or uiState.selectedRight then
     buffer.write("Target: ")
     buffer.setTextColor(colors.white)
     buffer.write(tostring(entry.target or 0))
-end
+    end
 
     -- Center Controls
     local mid = 30
@@ -410,6 +410,7 @@ for i=0, 3 do
         buffer.setCursorPos(x, 17 + charIdx) 
         buffer.write(str:sub(charIdx, charIdx))
     end
+end
 end
 
 local function renderHistory()
