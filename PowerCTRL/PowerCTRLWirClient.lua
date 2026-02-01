@@ -151,36 +151,49 @@ local animTimer = os.startTimer(0.5)
 while true do
     drawUI()
     local ev, p1, p2, p3, p4 = os.pullEvent()
+    
     if ev == "modem_message" then
         if p2 == channel then
-            if type(p4) == "table" and p4.type == "DATA" then lastData = p4 end
-elseif p2 == aeChannel then
-    if type(p4) == "table" and p4.type == "SERVER_SYNC" then
-        -- Reset count, then search the items list for Yellorium
-        local foundYello = 0
-        if p4.items then
-            for _, item in ipairs(p4.items) do
-                -- Check for common Yellorium ID. Adjust string if using a different modpack.
-                if item.name == "BigReactors:ingotYellorium" or item.name == "biggerreactors:yellorium_ingot" then
-                    foundYello = foundYello + item.count
-                end
+            if type(p4) == "table" and p4.type == "DATA" then 
+                lastData = p4 
             end
-        end
-        aeData.yellorium = foundYello
-    end
-    logMsg("RECV", p4)
+        elseif p2 == aeChannel then
+            if type(p4) == "table" and p4.type == "SERVER_SYNC" then
+                -- Reset count, then search the items list for Yellorium
+                local foundYello = 0
+                if p4.items then
+                    for _, item in ipairs(p4.items) do
+                        -- Check for common Yellorium ID
+                        if item.name == "BigReactors:ingotYellorium" or item.name == "biggerreactors:yellorium_ingot" then
+                            foundYello = foundYello + item.count
+                        end
+                    end
+                end
+                aeData.yellorium = foundYello
+            end
+        end -- This closes the channel check if/elseif
+        logMsg("RECV", p4)
+
     elseif ev == "monitor_touch" then
         local x, y = p2, p3
         if y == 1 then
             if x >= 2 and x <= 12 then currentView = "REACTOR"
             elseif x >= 15 and x <= 25 then currentView = "MODEM" end
         elseif currentView == "REACTOR" then
-            if y == 14 and x >= 4 and x <= 20 then pendingAuto = not (lastData and lastData.auto); sendCmd("TOGGLE_AUTO")
+            if y == 14 and x >= 4 and x <= 20 then 
+                pendingAuto = not (lastData and lastData.auto)
+                sendCmd("TOGGLE_AUTO")
             elseif y == 16 then
-                if x >= 4 and x <= 13 then pendingActive = true; sendCmd("ON")
-                elseif x >= 15 and x <= 24 then pendingActive = false; sendCmd("OFF") end
+                if x >= 4 and x <= 13 then 
+                    pendingActive = true
+                    sendCmd("ON")
+                elseif x >= 15 and x <= 24 then 
+                    pendingActive = false
+                    sendCmd("OFF") 
+                end
             end
         end
+
     elseif ev == "timer" and p1 == animTimer then
         animIndex = (animIndex % 7) + 1
         animTimer = os.startTimer(0.5)
