@@ -157,22 +157,25 @@ while true do
             if type(p4) == "table" and p4.type == "DATA" then 
                 lastData = p4 
             end
-        elseif p2 == aeChannel then
-            if type(p4) == "table" and p4.type == "SERVER_SYNC" then
-                -- Reset count, then search the items list for Yellorium
-                local foundYello = 0
-                if p4.items then
-                    for _, item in ipairs(p4.items) do
-                        -- Check for common Yellorium ID
-                        if item.name == "BigReactors:ingotYellorium" or item.name == "biggerreactors:yellorium_ingot" then
-                            foundYello = foundYello + item.count
-                        end
-                    end
+elseif p2 == aeChannel then
+    if type(p4) == "table" and p4.type == "SERVER_SYNC" then
+        local foundYello = 0
+        if p4.items then
+            for _, item in ipairs(p4.items) do
+                -- Convert name to lowercase for a safer comparison
+                local name = string.lower(item.name or "")
+                
+                -- Check for various known Yellorium IDs
+                if name:find("yellorium_ingot") or 
+                   name:find("ingotyellorium") or 
+                   name:find("yelloriumingot") then
+                    foundYello = foundYello + (item.count or 0)
                 end
-                aeData.yellorium = foundYello
             end
-        end -- This closes the channel check if/elseif
-        logMsg("RECV", p4)
+        end
+        aeData.yellorium = foundYello
+    end
+    logMsg("RECV", p4)
 
     elseif ev == "monitor_touch" then
         local x, y = p2, p3
