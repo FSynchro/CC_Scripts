@@ -462,17 +462,26 @@ end
 -- =================================================================
 
 local function adjustStock(itemKey, amount)
-    if not itemKey then return end
-    modem.transmit(1429, 1428, { type = "ADJUST_STOCK", key = itemKey, delta = amount })
+    if not itemKey or not serverData.itemDB[itemKey] then return end
+
+    -- 1. Calculate the new final target
+    local currentTarget = serverData.itemDB[itemKey].target or 0
+    local newTarget = math.max(0, currentTarget + amount)
+
+    -- 2. Update local UI immediately so it feels responsive
+    serverData.itemDB[itemKey].target = newTarget
+
+    -- 3. Transmit using the fields the Server actually checks (type and name)
+    modem.transmit(1429, 1428, { 
+        type = "SET_RULE", 
+        name = itemKey, 
+        target = newTarget 
+    })
     
-    -- Log that we just used the Command Channel
+    -- Debug logging
     if debugLog[1429] then
         debugLog[1429].lastSeen = os.date("%H:%M:%S")
-        debugLog[1429].status = "Sent Cmd"
-    end
-
-    if serverData.itemDB[itemKey] then
-        serverData.itemDB[itemKey].target = (serverData.itemDB[itemKey].target or 0) + amount
+        debugLog[1429].status = "Sent SET_RULE"
     end
 end
 
