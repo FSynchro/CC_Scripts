@@ -46,62 +46,70 @@ print("Server v27.0 Online - Precision Mode")
 -- =================================================================
 while true do 
     local successI, rawItems = pcall(me.listAvailableItems)
-    local itemMap = {} -- <--- DECLARE THIS HERE (Outside the IF)
+    local currentTime = os.epoch("utc") / 1000
     
     if successI then
-        -- Remove the 'local' from the line below since we defined it above
-        itemMap = {} 
+        -- Reset counts so items gone from AE2 show as 0
+        for _, entry in pairs(itemDB) do entry.count = 0 end
+
         for _, it in ipairs(rawItems) do
             local key = it.name .. ":" .. (it.damage or 0)
-            itemMap[key] = (itemMap[key] or 0) + it.count
+            
+            -- Initialize item in DB if it's new
+            if not itemDB[key] then
+                itemDB[key] = { label = it.label or "Awaiting Meta..." }
+                table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+            end
 
-            if it.isCraftable then
-                if not itemDB[key] or type(itemDB[key]) ~= "table" or itemDB[key].label == "ERROR: No Meta" then
-                    itemDB[key] = { label = "AwaitingTranslation", managed = (stockRules[key] ~= nil) }
-                    
-                    local inQueue = false
-                    for _, q in ipairs(translationQueue) do if q.key == key then inQueue = true break end end
-                    if not inQueue then
-                        table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+            -- Update itemDB state
+            itemDB[key].count = it.count
+            itemDB[key].isCraftable = it.isCraftable
+            itemDB[key].target = stockRules[key] or 0
+            itemDB[key].managed = (itemDB[key].target > 0)
+
+            -- Autocraft Logic
+            if stats.managedEnabled then
+                local target = itemDB[key].target
+                local cooldown = stats.failCooldowns[key] or 0
+                
+                if target > 0 and it.count < target and it.isCraftable then
+                    local busy = false
+                    for _, j in pairs(activeJobs) do if j.key == key then busy = true break end end
+
+                    if not busy and currentTime > cooldown then
+                        local ok, itemHandle = pcall(me.findItem, { name = it.name, damage = it.damage or 0 })
+                        if ok and itemHandle then
+                            local needed = target - it.count
+                            local craftOk, handle = pcall(itemHandle.craft, needed)
+                            if craftOk and type(handle) == "table" then
+                                table.insert(activeJobs, {
+                                    handle = handle, key = key, id = os.epoch("utc"), 
+                                    displayName = itemDB[key].label, target = needed, 
+                                    startCount = it.count, progress = 0, startTime = currentTime
+                                })
+                            else
+                                stats.failCooldowns[key] = currentTime + 10
+                            end
+                        end
                     end
                 end
             end
         end
-
-        -- =============================================================
-        -- BLOCK 5: PRECISION TRANSLATOR 
-        -- Fetches real "Display Names" from AE2
-        -- =============================================================
-
-        -- PRECISION TRANSLATOR 
-if #translationQueue > 0 then
-            local nextItem = table.remove(translationQueue, 1)
-            stats.currentItem = nextItem.key
-            stats.writeStatus = "In Progress"
-
-            local query = nextItem.name .. "@" .. nextItem.damage
-            local ok, handle = pcall(me.findItem, query)
-            
-            if ok and handle then
-                local mOk, meta = pcall(handle.getMetadata)
-                if mOk and meta and meta.displayName then
-                    itemDB[nextItem.key] = { 
-                        label = meta.displayName, 
-                        managed = (stockRules[nextItem.key] ~= nil) 
-                    }
-                    saveTable("item_db.dat", itemDB)
-                    stats.writeStatus = "Complete"
-                else
-                    itemDB[nextItem.key] = { label = "ERROR: No Meta", managed = false }
-                    stats.writeStatus = "Failed"
-                end
-            end
-        else
-            stats.currentItem = "Idle"
-            stats.writeStatus = "Idle"
-        end
-        stats.queueSize = #translationQueue
     end
+
+    -- Translator Logic
+    if #translationQueue > 0 then
+        local nextItem = table.remove(translationQueue, 1)
+        local ok, handle = pcall(me.findItem, { name = nextItem.name, damage = nextItem.damage or 0 })
+        if ok and handle then
+            local mOk, meta = pcall(handle.getMetadata)
+            if mOk and meta and meta.displayName then
+                if itemDB[nextItem.key] then itemDB[nextItem.key].label = meta.displayName end
+                saveTable("item_db.dat", itemDB)
+            end
+        end
+    end
+    stats.queueSize = #translationQueue
 
 -- =============================================================
     -- BLOCK 6: JOB MONITORING
@@ -218,7 +226,7 @@ if #translationQueue > 0 then
     end
     if cpuData.total > 0 then cpuData.avgCoPro = cpuData.totalCoPro / cpuData.total end
 
-    -- ADD THIS PART HERE: Summarize items for the STOR tab
+    
     local totalItemsCount = 0
     local usedTypesCount = 0
     if successI and rawItems then
@@ -230,11 +238,9 @@ if #translationQueue > 0 then
 
     modem.transmit(DATA_CHAN, DATA_CHAN, {
         type = "SERVER_SYNC", 
-        items = rawItems, 
         itemDB = itemDB,
         activeJobs = activeJobs, 
         history = history, 
-        rules = stockRules, 
         stats = stats,
         cpus = cpuData,
         totalItems = totalItemsCount,

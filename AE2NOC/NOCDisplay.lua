@@ -50,7 +50,6 @@ local driveSpecs = {
     ["extracells:storage.physical"] = { [0] = 256000, [1] = 1024000, [2] = 4096000, [3] = 16384000 }
 }
 
--- Add this to your global data table or as a standalone
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
 local systemBytesUsed = 0 -- We'll calculate this from total items
 
@@ -91,7 +90,7 @@ end
 
 
 local function formatValue(val)
-    val = val or 0 -- Safety check: if val is nil, make it 0
+    val = val or 0 
     if val >= 1048576 then return string.format("%.1fMB", val / 1048576)
     elseif val >= 1024 then return string.format("%.1fKB", val / 1024) end
     return val .. "B"
@@ -112,7 +111,7 @@ local function updateStockCache()
     local itemDB = serverData.itemDB or {}
     local rules = serverData.rules or {}
     local items = serverData.items or {}
-    local jobs = serverData.jobs or {} -- Ensure your server sends this!
+    local jobs = serverData.jobs or {} 
 
     -- 1. SORTED MANAGED LIST
     local keys = {}
@@ -641,37 +640,54 @@ while true do
         end -- End of currentTab == 3 logic
         refreshUI()
 
+-- =================================================================
+-- REPLACED: MODEM MESSAGE HANDLER (NOCDisplay.lua)
+-- =================================================================
 elseif ev == "modem_message" then
-        if type(msg) == "table" then
-            if debugLog[p1] then
-                debugLog[p1].status = "ONLINE"
-                debugLog[p1].lastSeen = os.date("%H:%M:%S")
+    if type(msg) == "table" then
+        -- TRACKER: Mark sender as ONLINE
+        if debugLog[p1] then
+            debugLog[p1].status = "ONLINE"
+            debugLog[p1].lastSeen = os.date("%H:%M:%S")
+        end
+
+        -- CHANNEL 1422: Cell Capacity Logic (Keep exactly as is)
+        if p1 == 1422 and msg.items then
+            storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
+            for _, it in ipairs(msg.items) do
+                if driveSpecs[it.name] then
+                    local cap = (type(driveSpecs[it.name]) == "table") 
+                                and (driveSpecs[it.name][it.damage] or 0) 
+                                or driveSpecs[it.name]
+                    local label = (type(driveSpecs[it.name]) == "table") 
+                                  and (math.floor(cap/1024).."k") 
+                                  or (it.name:match("storage_cell_(%d+k)") or "1k")
+                    storageData.maxBytes = storageData.maxBytes + (cap * it.count)
+                    storageData.maxTypes = storageData.maxTypes + (63 * it.count)
+                    storageData.counts[label] = (storageData.counts[label] or 0) + it.count
+                end
             end
 
-            -- CHANNEL 1422: Cell Capacity Logic
-            if p1 == 1422 and msg.items then
-                -- Reset totals before recalculating from the new list
-                storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
-                for _, it in ipairs(msg.items) do
-                    if driveSpecs[it.name] then
-                        local cap = (type(driveSpecs[it.name]) == "table") 
-                                    and (driveSpecs[it.name][it.damage] or 0) 
-                                    or driveSpecs[it.name]
-                        
-                        local label = (type(driveSpecs[it.name]) == "table") 
-                                      and (math.floor(cap/1024).."k") 
-                                      or (it.name:match("storage_cell_(%d+k)") or "1k")
-                        
-                        storageData.maxBytes = storageData.maxBytes + (cap * it.count)
-                        storageData.maxTypes = storageData.maxTypes + (63 * it.count)
-                        storageData.counts[label] = (storageData.counts[label] or 0) + it.count
-                    end
-                end
+        -- CHANNEL 1428: The New Unified Data Sync
+        elseif p1 == 1428 then 
+            serverData.itemDB = msg.itemDB
+            serverData.activeJobs = msg.activeJobs
+            serverData.history = msg.history
+            serverData.stats = msg.stats
+            serverData.cpus = msg.cpus
             
-            -- CHANNEL 1428: Your existing Main Dashboard Data
-            elseif p1 == 1428 then 
-                serverData = msg 
+            -- Flatten the itemDB into the 'items' list for the UI
+            local newList = {}
+            for key, data in pairs(serverData.itemDB) do
+                data.key = key 
+                table.insert(newList, data)
             end
+            
+            -- Sort by label so the list is readable
+            table.sort(newList, function(a, b) return a.label < b.label end)
+            serverData.items = newList
+        end
+    end
             
             refreshUI()
         end
