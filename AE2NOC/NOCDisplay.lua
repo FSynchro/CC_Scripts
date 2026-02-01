@@ -460,6 +460,10 @@ while true do
         
     elseif ev == "modem_message" then
         local p1, msg = eventData[3], eventData[5]
+        if debugLog[p1] then
+            debugLog[p1].lastSeen = os.date("%H:%M:%S")
+            debugLog[p1].status = "Active"
+        end
         if type(msg) == "table" then
             -- Storage Cell Updates
             if p1 == 1422 and msg.items then
