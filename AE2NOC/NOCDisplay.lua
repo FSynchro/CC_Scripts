@@ -340,27 +340,46 @@ local function renderStockControl()
     end
 
     -- Compressed Selection Overlay
-    if uiState.selectedLeft or uiState.selectedRight then
-        local isL = uiState.selectedLeft ~= nil
-        local x1, x2 = isL and 2 or 36, isL and 24 or 58
-        local k = isL and uiState.selectedLeft or uiState.selectedRight
-        local entry = serverData.itemDB[k] or {}
+-- Inside renderStockControl()
+if uiState.selectedLeft or uiState.selectedRight then
+    local isL = uiState.selectedLeft ~= nil
+    local x1, x2 = isL and 2 or 36, isL and 24 or 58
+    local k = isL and uiState.selectedLeft or uiState.selectedRight
+    local entry = serverData.itemDB[k] or {}
 
-        drawBox(x1, x2, 17, 21, "SELECTED", colors.yellow)
-        buffer.setBackgroundColor(colors.black)
-        
-        buffer.setTextColor(colors.white)
-        renderScrollingText(x1+1, 18, 20, "Name: "..(entry.label or "Unknown"))
-        
-        buffer.setCursorPos(x1+1, 19); buffer.setTextColor(colors.gray)
-        buffer.write("ID: "..k:sub(1, 19))
-        
-        buffer.setCursorPos(x1+1, 20); buffer.setTextColor(colors.orange)
-        buffer.write("Stock: "..formatNum(entry.count or 0))
-        
-        buffer.setCursorPos(x1+1, 21); buffer.setTextColor(colors.lightBlue)
-        buffer.write("Target: "..formatNum(entry.target or 0))
-    end
+    -- Box moved down to start at Y=18
+    drawBox(x1, x2, 18, 22, "SELECTED", colors.yellow)
+    buffer.setBackgroundColor(colors.black)
+    
+    -- Line 19: Name (Static Label)
+    buffer.setCursorPos(x1+1, 19)
+    buffer.setTextColor(colors.gray)
+    buffer.write("Name: ") 
+    buffer.setTextColor(colors.white)
+    -- Scrolling starts AFTER "Name: " (x1 + 7)
+    renderScrollingText(x1+7, 19, (x2-x1)-7, entry.label or cleanName(k))
+    
+    -- Line 20: ID (Static Label)
+    buffer.setCursorPos(x1+1, 20)
+    buffer.setTextColor(colors.gray)
+    buffer.write("ID: ")
+    buffer.setTextColor(colors.white)
+    buffer.write(k:sub(1, (x2-x1)-5))
+    
+    -- Line 21: Stock
+    buffer.setCursorPos(x1+1, 21)
+    buffer.setTextColor(colors.orange)
+    buffer.write("Stock: ")
+    buffer.setTextColor(colors.white)
+    buffer.write(tostring(entry.count or 0))
+    
+    -- Line 22: Target
+    buffer.setCursorPos(x1+1, 22)
+    buffer.setTextColor(colors.lightBlue)
+    buffer.write("Target: ")
+    buffer.setTextColor(colors.white)
+    buffer.write(tostring(entry.target or 0))
+end
 
     -- Center Controls
     local mid = 30
@@ -376,11 +395,20 @@ local function renderStockControl()
     buffer.setCursorPos(mid-1, 12); buffer.write(">>") -- Remove from Managed
 
     -- Plus/Minus Buttons (Standard Logic)
-    local amounts = {"1", "10", "100", "1k"}
-    for i=0, 3 do
-        local x = 26 + (i*2)
-        buffer.setBackgroundColor(colors.green); buffer.setCursorPos(x, 17); buffer.write("+")
-        buffer.setBackgroundColor(colors.red); buffer.setCursorPos(x, 22); buffer.write("-")
+-- Adjustment Grid Rendering
+local amounts = {"1", "10", "100", "1k"}
+for i=0, 3 do
+    local x = 26 + (i*2)
+    -- Buttons
+    buffer.setBackgroundColor(colors.green); buffer.setCursorPos(x, 17); buffer.write("+")
+    buffer.setBackgroundColor(colors.red);   buffer.setCursorPos(x, 22); buffer.write("-")
+    
+    -- Labels (placed at 18, 19, 20, 21)
+    buffer.setBackgroundColor(colors.black); buffer.setTextColor(colors.gray)
+    local str = amounts[i+1]
+    for charIdx = 1, #str do
+        buffer.setCursorPos(x, 17 + charIdx) 
+        buffer.write(str:sub(charIdx, charIdx))
     end
 end
 
