@@ -6,12 +6,6 @@ local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(_, p) return p.isWireless() end) 
     or error("No Wireless Modem Found")
 
-local debugLog = {
-    [1422] = {lastSeen = "Never", status = "Waiting"},
-    [1428] = {lastSeen = "Never", status = "Waiting"},
-    [1429] = {lastSeen = "Never", status = "Waiting"}
-}
-
 mon.setTextScale(0.5)
 local w, h = mon.getSize()
 local buffer = window.create(mon, 1, 1, w, h, true)
@@ -48,22 +42,6 @@ local function drawBar(x, y, width, current, max)
     buffer.write(math.floor(progress * 100) .. "%")
 end
 
-local function formatStorage(n)
-    if not n or n == 0 then return "0" end
-    if n < 1000 then return tostring(n) end
-    local units = {"k", "m", "b", "t"}
-    for i = #units, 1, -1 do
-        local value = 10^(i * 3)
-        if n >= value then
-            local res = n / value
-            return (res % 1 == 0 and ("%d%s"):format(res, units[i]) or ("%.1f%s"):format(res, units[i]))
-        end
-    end
-    return tostring(n)
-end
-
-
-
 local driveSpecs = {
     ["appliedenergistics2:storage_cell_1k"] = 1024,
     ["appliedenergistics2:storage_cell_4k"] = 4096,
@@ -72,6 +50,7 @@ local driveSpecs = {
     ["extracells:storage.physical"] = { [0] = 256000, [1] = 1024000, [2] = 4096000, [3] = 16384000 }
 }
 
+-- Add this to your global data table or as a standalone
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
 local systemBytesUsed = 0 -- We'll calculate this from total items
 
@@ -81,17 +60,28 @@ local lastStockRefresh = 0
 local cachedLowStock = {} 
 local cachedManagedKeys = {}
 local cachedCraftableList = {}
+local selectedManaged = nil
+local selectedCraftable = nil
 local scrollOffset = 0
 local lastTick = os.epoch("utc")
 local currentTab = 1
 local scrollPos = 1
 local managedScroll = 1
+local selectedJobID = nil
 local stockScroll = 1
+local craftableList = {}
 local uiState = { selectedLeft = nil, selectedRight = nil, stockLevel = 100 }
 local serverData = { items = {}, activeJobs = {}, rules = {}, stats = {completed=0, managedEnabled=true, queueSize=0}, history = {}, itemDB = {} }
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {}, usedBytes = 0, usedTypes = 0 }
 local debugLog = { [1422] = {lastSeen="Never", status="Waiting"}, [1428] = {lastSeen="Never", status="Waiting"} }
 local selectedHistoryIndex = nil
+local statusMessages = {
+    missing = "Job ended with missing, likely missing ingredients or recipe!",
+    canceled = "Job was manually canceled or system was reset.",
+    stalled = "Job is stalled! Check for machine bottlenecks.",
+    finished = "Job completed Successfully and crafted: %s %s",
+    unknown = "Job in Progress: Crafting: %s (%s/%s)"
+}
 
 local function cleanName(n) 
     if not n or type(n) ~= "string" then return "Unknown Item" end -- Added type check
@@ -101,7 +91,7 @@ end
 
 
 local function formatValue(val)
-    val = val or 0 
+    val = val or 0 -- Safety check: if val is nil, make it 0
     if val >= 1048576 then return string.format("%.1fMB", val / 1048576)
     elseif val >= 1024 then return string.format("%.1fKB", val / 1024) end
     return val .. "B"
@@ -117,38 +107,76 @@ end
 
 local function updateStockCache()
     local now = os.epoch("utc") / 1000
-    if (now - lastStockRefresh) < 2 then return end
-    lastStockRefresh = now
+    if (now - lastStockRefresh) < 20 and #cachedManagedKeys > 0 then return end
     
     local itemDB = serverData.itemDB or {}
-    local managedKeys = {}
-    local craftableList = {}
-    
-    -- 1. Categorize items
-    for key, entry in pairs(itemDB) do
-        local label = entry.label or cleanName(key)
-        
-        if entry.target and entry.target > 0 then
-            -- Only in Managed
-            table.insert(managedKeys, key)
-        elseif entry.isCraftable then
-            -- Only in Craftable if NOT managed
-            table.insert(craftableList, {key = key, label = label})
+    local rules = serverData.rules or {}
+    local items = serverData.items or {}
+    local jobs = serverData.jobs or {} -- Ensure your server sends this!
+
+    -- 1. SORTED MANAGED LIST
+    local keys = {}
+    for k in pairs(rules) do table.insert(keys, k) end
+    table.sort(keys, function(a, b)
+        local labelA = tostring(itemDB[a] and (type(itemDB[a]) == "table" and itemDB[a].label or itemDB[a]) or cleanName(a))
+        local labelB = tostring(itemDB[b] and (type(itemDB[b]) == "table" and itemDB[b].label or itemDB[b]) or cleanName(b))
+        return labelA:lower() < labelB:lower()
+    end)
+    cachedManagedKeys = keys
+
+    -- 2. CALCULATE STATUS & COLORS
+    cachedManagedStatus = {}
+    for _, key in ipairs(keys) do
+        local target = rules[key]
+        local cur = 0
+        for _, it in ipairs(items) do 
+            if (it.name .. ":" .. (it.damage or 0)) == key then cur = it.count break end 
+        end
+
+        local statusColor = colors.white
+        if cur >= target then
+            statusColor = colors.green
+        else
+            -- Check for active jobs
+            local isCrafting = false
+            local isBlocked = false
+            for _, job in ipairs(jobs) do
+                local jobKey = job.name .. ":" .. (job.damage or 0)
+                if jobKey == key then
+                    isCrafting = true
+                    if job.isBlocked or job.status == "MissingIngredients" then
+                        isBlocked = true
+                    end
+                    break
+                end
+            end
+
+            if isCrafting then
+                statusColor = isBlocked and colors.red or colors.cyan
+            else
+                statusColor = colors.white -- Or orange if you want "Waiting to start"
+            end
+        end
+        cachedManagedStatus[key] = {color = statusColor, cur = cur, target = target}
+    end
+
+    -- 3. SORTED CRAFTABLE LIST (Right Side)
+    local newList = {}
+    for _, it in ipairs(items) do
+        local k = it.name .. ":" .. (it.damage or 0)
+        -- Only add if it's craftable AND not already in our rules
+        if it.isCraftable and not rules[k] then 
+            local raw = itemDB[k] or it.label or cleanName(it.name)
+            local dName = type(raw) == "table" and raw.label or raw
+            table.insert(newList, {key=k, label=dName}) 
         end
     end
-    
-    -- 2. Sort Managed Keys (Alphabetical)
-    table.sort(managedKeys, function(a, b)
-        return (itemDB[a].label or a):lower() < (itemDB[b].label or b):lower()
+    table.sort(newList, function(a, b) 
+        return tostring(a.label):lower() < tostring(b.label):lower() 
     end)
-    
-    -- 3. Sort Craftable List (Alphabetical)
-    table.sort(craftableList, function(a, b)
-        return a.label:lower() < b.label:lower()
-    end)
-    
-    cachedManagedKeys = managedKeys
-    cachedCraftableList = craftableList
+    cachedCraftableList = newList
+
+    lastStockRefresh = now
 end
 
 
@@ -201,435 +229,450 @@ end
 -- =================================================================
 -- BLOCK 4: TAB RENDERING (MAIN UI REFRESH)
 -- =================================================================
-
-local function renderDashboard()
+local function refreshUI()
+    buffer.setVisible(false); buffer.setBackgroundColor(colors.black); buffer.clear()
+    drawTabs()
     local jobs = serverData.activeJobs or {}
     local itemDB = serverData.itemDB or {}
 
-    -- MANAGED STATS
-    drawBox(2, 29, 3, 12, "MANAGED STATS", colors.yellow)
-    local recipeCount, totalEntries = 0, 0
-    for _, entry in pairs(itemDB) do
-        totalEntries = totalEntries + 1
-        if entry.isCraftable then recipeCount = recipeCount + 1 end
-    end
-
-    buffer.setCursorPos(4, 5); buffer.setTextColor(colors.cyan); buffer.write("Recipes: ")
-    buffer.setTextColor(colors.white); buffer.write(tostring(recipeCount))
-    buffer.setCursorPos(4, 6); buffer.setTextColor(colors.cyan); buffer.write("Items:   ")
-    buffer.setTextColor(colors.white); buffer.write(tostring(totalEntries))
-    buffer.setCursorPos(4, 9); buffer.setTextColor(colors.white); buffer.write("Jobs Done:   ".. (serverData.stats.completed or 0))
-    buffer.setCursorPos(4, 11); buffer.write("Active Jobs: ".. #jobs)
-
-    -- ACTIVE JOBS
-    drawBox(31, 56, 3, 13, "ACTIVE JOBS", colors.magenta)
-    for i, job in ipairs(jobs) do
-        if i > 4 then break end
-        local row = 4 + (i*2)
-        local jName = job.label or (itemDB[job.key] and itemDB[job.key].label) or cleanName(job.key)
-        buffer.setCursorPos(32, row); buffer.setTextColor(colors.white); buffer.write(tostring(jName):sub(1,16))
+-- TAB 1: DASHBOARD
+    if currentTab == 1 then
+        -- --- MANAGED STATS BOX ---
+        drawBox(2, 29, 3, 12, "MANAGED STATS", colors.yellow)
         
-        if job.isStalled or job.status == "missing" then
-            buffer.setCursorPos(32, row+1); buffer.setBackgroundColor(colors.red); buffer.write(" [ MISSING RESOURCES ] "); buffer.setBackgroundColor(colors.black)
-        else
-            drawJobProgressBar(32, row+1, 20, job.progress, job.target)
-            buffer.setCursorPos(52, row+1); buffer.setTextColor(colors.gray); buffer.write(formatNum(job.progress or 0))
+        local ruleCount = 0; for _ in pairs(serverData.rules or {}) do ruleCount = ruleCount + 1 end
+        local recipeCount = 0; for _ in pairs(serverData.itemDB or {}) do recipeCount = recipeCount + 1 end
+        
+        buffer.setCursorPos(4, 5);  buffer.write("Items Managed: ".. ruleCount)
+        buffer.setCursorPos(4, 7);  buffer.write("Recipes:       ".. recipeCount)
+        buffer.setCursorPos(4, 9);  buffer.write("Jobs Done:     ".. (serverData.stats.completed or 0))
+        buffer.setCursorPos(4, 11); buffer.write("Active Jobs:   ".. #jobs)
+
+        -- --- ACTIVE JOBS BOX ---
+        drawBox(31, 56, 3, 13, "ACTIVE JOBS", colors.magenta)
+        for i, job in ipairs(jobs) do
+            if i > 4 then break end
+            local row = 4 + (i*2)
+            buffer.setCursorPos(32, row); buffer.setTextColor(colors.white)
+            
+            local jName = job.label or (itemDB[job.key] and itemDB[job.key].label) or cleanName(job.key)
+            buffer.write(tostring(jName):sub(1,16))
+            
+            if job.isStalled or job.status == "missing" then
+                buffer.setCursorPos(32, row+1); buffer.setBackgroundColor(colors.red)
+                buffer.setTextColor(colors.white); buffer.write(" [ MISSING RESOURCES ] ")
+                buffer.setBackgroundColor(colors.black)
+            else
+                drawJobProgressBar(32, row+1, 20, job.progress, job.target)
+                buffer.setCursorPos(52, row+1); buffer.setTextColor(colors.gray)
+                buffer.write(formatNum(job.progress or 0))
+            end
         end
-    end
 
-    -- SYSTEM CAPABILITY
-    drawBox(2, 29, 13, 28, "SYSTEM CAPABILITY", colors.lightBlue)
-    local cpu = serverData.cpus or {total=0, busy=0, avgCoPro=0, maxStorage=0}
-    buffer.setCursorPos(4, 15); buffer.write("CraftingCPUs: "); buffer.setTextColor(colors.lime); buffer.write(tostring(cpu.total))
-    buffer.setCursorPos(4, 17); buffer.setTextColor(colors.white); buffer.write("AVG Copros:   "); buffer.setTextColor(colors.yellow); buffer.write(string.format("%.1f", cpu.avgCoPro))
-    buffer.setCursorPos(4, 19); buffer.write("Max Storage:  "); buffer.setTextColor(colors.cyan); buffer.write(formatValue(cpu.maxStorage or 0))
+        -- --- SYSTEM CAPABILITY BOX ---
+        drawBox(2, 29, 13, 28, "SYSTEM CAPABILITY", colors.lightBlue)
+        local cpu = (serverData.cpus) or {total=0, busy=0, avgCoPro=0, maxStorage=0}
 
-    -- CPU Usage Bar
-    buffer.setCursorPos(4, 21); buffer.setTextColor(colors.gray); buffer.write("[")
-    local filled = cpu.total > 0 and math.floor((cpu.busy / cpu.total) * 20) or 0
-    for i=1, 20 do buffer.setTextColor(i <= filled and colors.red or colors.lime); buffer.write(i <= filled and "|" or ".") end
-    buffer.write("]")
-end
+        buffer.setCursorPos(4, 15); buffer.setTextColor(colors.white); buffer.write("CraftingCPUs: ")
+        buffer.setTextColor(colors.lime); buffer.write(tostring(cpu.total))
+        buffer.setTextColor(colors.white); buffer.write(" / ")
+        buffer.setTextColor(cpu.busy > 0 and colors.red or colors.gray); buffer.write(tostring(cpu.busy))
 
-local function renderDebug()
-    local stats = serverData.stats or { queueSize = 0, currentEntry = {} }
-    local itemDB = serverData.itemDB or {}
-    local entry = stats.currentEntry
+        buffer.setCursorPos(4, 17); buffer.setTextColor(colors.white); buffer.write("AVG Copros:   ")
+        buffer.setTextColor(colors.yellow); buffer.write(string.format("%.1f", cpu.avgCoPro))
 
-    -- WINDOW 1: NETWORK STATUS
-    drawBox(2, 58, 3, 10, "MODEM NETWORK STATUS", colors.yellow)
-    local channels = {1422, 1428, 1429}
-local labels = {
-    [1422] = "Cell Sync",    -- External storage cell reader
-    [1428] = "System Data",  -- Main server broadcast (CPUs, Items, Jobs)
-    [1429] = "Command Bus"   -- Your UI-to-Server instructions
-}
-    
-    for i, chan in ipairs(channels) do
-        local log = debugLog[chan] or {lastSeen="Never", status="Waiting"}
-        local yPos = 4 + i
-        buffer.setCursorPos(4, yPos)
-        buffer.setTextColor(colors.cyan); buffer.write(string.format("%-12s", labels[chan]))
-        buffer.setTextColor(colors.white); buffer.write(" | Rx: ")
-        
-        -- Color code status
-        local statCol = log.status == "Active" and colors.lime or colors.red
-        buffer.setTextColor(statCol); buffer.write(string.format("%-8s", log.lastSeen))
-        buffer.setTextColor(colors.gray); buffer.write(" ["..log.status.."]")
-    end
+        buffer.setCursorPos(4, 19); buffer.setTextColor(colors.white); buffer.write("Max Storage:  ")
+        buffer.setTextColor(colors.cyan); buffer.write(formatValue(cpu.maxStorage or 0))
 
-    -- WINDOW 2: TRANSLATION SCHEDULER
-    drawBox(2, 58, 12, 28, "TRANSLATION SCHEDULER", colors.orange)
-    buffer.setCursorPos(4, 14)
-    buffer.setTextColor(colors.white); buffer.write("Queue Size: ")
-    buffer.setTextColor(colors.yellow); buffer.write(tostring(stats.queueSize or 0))
-
-    if entry and entry.key then
-        local dbEntry = itemDB[entry.key] or {}
-        
-        buffer.setCursorPos(4, 16); buffer.setTextColor(colors.gray); buffer.write("--- Current Entry ---")
-        
-        -- Item Display Name
-        buffer.setCursorPos(4, 18); buffer.setTextColor(colors.white); buffer.write("Item:    ")
-        buffer.setTextColor(colors.lime); buffer.write(tostring(dbEntry.label or "Awaiting Meta..."):sub(1, 35))
-        
-        -- Raw Technical Name (OldName)
-        buffer.setCursorPos(4, 20); buffer.setTextColor(colors.white); buffer.write("OldName: ")
-        buffer.setTextColor(colors.gray); buffer.write(tostring(entry.key):sub(1, 35))
-        
-        -- Write Status Logic
-        local isWritten = (dbEntry.label ~= nil and dbEntry.label ~= "Awaiting Meta...")
-        buffer.setCursorPos(4, 23); buffer.setTextColor(colors.white); buffer.write("Write Status: ")
-        if isWritten then
-            buffer.setTextColor(colors.lime); buffer.write("[COMPLETE]")
-        else
-            buffer.setTextColor(colors.yellow); buffer.write("[IN PROGRESS...]")
+        -- Usage Bar
+        buffer.setCursorPos(4, 21); buffer.setTextColor(colors.gray); buffer.write("[")
+        local barWidth = 20
+        local filled = cpu.total > 0 and math.floor((cpu.busy / cpu.total) * barWidth) or 0
+        for i=1, barWidth do
+            if i <= filled then buffer.setTextColor(colors.red); buffer.write("|")
+            else buffer.setTextColor(colors.lime); buffer.write(".") end
         end
-    else
-        buffer.setCursorPos(4, 18); buffer.setTextColor(colors.lime); buffer.write("Status:  IDLE (All items translated)")
-    end
-end
+        buffer.setTextColor(colors.gray); buffer.write("]")
 
-local function renderStockControl()
+        -- --- AUTOCRAFT CONTROL UI ---
+        local mCol = (serverData.stats and serverData.stats.managedEnabled) and colors.lime or colors.red
+        buffer.setCursorPos(32, 16); buffer.setBackgroundColor(mCol); buffer.setTextColor(colors.black)
+        buffer.write(" AUTOCRAFT: "..((serverData.stats and serverData.stats.managedEnabled) and "ON" or "OFF"))
+        buffer.setBackgroundColor(colors.blue); buffer.setTextColor(colors.white)
+        buffer.setCursorPos(32, 22); buffer.write(" [MANAGE STOCK] ")
+        buffer.setBackgroundColor(colors.black)
+
+-- TAB 2: DEBUG & TRANSLATION
+    elseif currentTab == 2 then
+        drawBox(2, 56, 3, 28, "SYSTEM DIAGNOSTICS", colors.yellow)
+        local r = 5
+        
+        -- 1. System Logs (Modem Channels)
+        for chan, d in pairs(debugLog) do
+            buffer.setCursorPos(4, r); buffer.setTextColor(colors.cyan); buffer.write("CH "..chan..": ")
+            buffer.setTextColor(d.status == "ONLINE" and colors.lime or colors.red); buffer.write(d.status)
+            buffer.setCursorPos(4, r+1); buffer.setTextColor(colors.gray); buffer.write(" Last RX: "..d.lastSeen)
+            r = r + 3
+        end
+
+        -- 2. Data Preparation
+        local s = serverData.stats or {}
+        local db = serverData.itemDB or {}
+        local currentKey = s.currentItem or "Idle"
+        
+        -- Pull friendly name from the DB using the currentKey
+        local friendlyName = "N/A"
+        if currentKey == "Idle" then
+            friendlyName = "System Idle"
+        elseif db[currentKey] then
+            friendlyName = db[currentKey].label or "Unknown"
+        end
+
+        -- 3. Translation Scheduler Display
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.orange); buffer.write("TRANSLATION SCHEDULER")
+        r = r + 1
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("Queue Size:    ".. (s.queueSize or 0))
+        r = r + 2
+        
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.gray); buffer.write("--- Current Entry ---")
+        r = r + 1
+        
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("displayName:  ")
+        buffer.setTextColor(colors.yellow); buffer.write(tostring(friendlyName):sub(1, 20))
+        r = r + 1
+        
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("itemname:     ")
+        buffer.setTextColor(colors.lightGray); buffer.write(tostring(currentKey):sub(1, 20))
+        r = r + 2
+        
+        buffer.setCursorPos(4, r); buffer.setTextColor(colors.white); buffer.write("Write Status: ")
+        local wStat = s.writeStatus or "Idle"
+        
+        -- Dynamic coloring for status
+        local statusCol = colors.gray
+        if wStat == "Complete" then statusCol = colors.lime 
+        elseif wStat == "In Progress" then statusCol = colors.yellow
+        elseif wStat == "Failed" then statusCol = colors.red end
+        
+        buffer.setTextColor(statusCol)
+        buffer.write("["..wStat.."]")
+
+-- TAB 3: STOCK MANAGEMENT 
+elseif currentTab == 3 then
     updateStockCache()
     
-    -- Determine visible range based on whether an overlay is open
-    local maxVisible = (uiState.selectedLeft or uiState.selectedRight) and 13 or 18
-    
-    local mStart = math.max(1, math.min(managedScroll, #cachedManagedKeys - maxVisible + 1))
-    local mEnd = math.min(mStart + maxVisible - 1, #cachedManagedKeys)
+    local mStart = managedScroll
+    local mEnd = math.min(mStart + 17, #cachedManagedKeys)
     local mHeader = string.format("MANAGED %d-%d/%d", mStart, mEnd, #cachedManagedKeys)
+    
+    local cStart = stockScroll
+    local cEnd = math.min(cStart + 17, #cachedCraftableList)
+    local cHeader = string.format("CRAFTABLES %d-%d/%d", cStart, cEnd, #cachedCraftableList)
 
-    local cStart = math.max(1, math.min(stockScroll, #cachedCraftableList - maxVisible + 1))
-    local cEnd = math.min(cStart + maxVisible - 1, #cachedCraftableList)
-    local cHeader = string.format("CRAFTABLE %d-%d/%d", cStart, cEnd, #cachedCraftableList)
-
+    -- MAIN LIST BOXES
     drawBox(2, 24, 3, 22, mHeader, colors.magenta)
     drawBox(36, 58, 3, 22, cHeader, colors.lightBlue)
 
-    -- List Rendering
-    for i = 1, maxVisible do
-        -- Left: Managed
-        local mKey = cachedManagedKeys[i + (mStart - 1)]
-        if mKey then
-            local entry = serverData.itemDB[mKey]
+    -- 18 Entry Loop
+    for i = 1, 18 do
+        local mIdx = i + (mStart - 1)
+        local key = cachedManagedKeys[mIdx]
+        if key then
+            local stats = cachedManagedStatus[key]
+            local raw = itemDB[key] or cleanName(key)
+            local label = type(raw) == "table" and raw.label or raw
             buffer.setCursorPos(3, 3 + i)
-            buffer.setBackgroundColor(uiState.selectedLeft == mKey and colors.gray or colors.black)
-            
-            local textColor = colors.white
-            if entry.isCrafting then textColor = colors.yellow 
-            elseif (entry.count or 0) < (entry.target or 0) then textColor = colors.red 
-            else textColor = colors.lime end
-            
-            buffer.setTextColor(textColor)
-            buffer.write(string.format("%-10s:%s/%s", tostring(entry.label or "??"):sub(1,10), formatNum(entry.count or 0), formatNum(entry.target or 0)))
+            buffer.setBackgroundColor(uiState.selectedLeft == key and colors.gray or colors.black)
+            buffer.setTextColor(stats.color)
+            buffer.write(string.format("%-10s:%s/%s", tostring(label):sub(1,10), formatNum(stats.cur), formatNum(stats.target)))
         end
 
-        -- Right: Craftable
-        local cItem = cachedCraftableList[i + (cStart - 1)]
+        local cIdx = i + (cStart - 1)
+        local cItem = cachedCraftableList[cIdx]
         if cItem then
             buffer.setCursorPos(37, 3 + i)
             buffer.setBackgroundColor(uiState.selectedRight == cItem.key and colors.gray or colors.black)
             buffer.setTextColor(uiState.selectedRight == cItem.key and colors.yellow or colors.white)
             buffer.write(tostring(cItem.label):sub(1,20))
         end
+        buffer.setBackgroundColor(colors.black)
     end
 
-    -- Compressed Selection Overlay
--- Inside renderStockControl()
-if uiState.selectedLeft or uiState.selectedRight then
-    local isL = uiState.selectedLeft ~= nil
-    local x1, x2 = isL and 2 or 36, isL and 24 or 58
-    local k = isL and uiState.selectedLeft or uiState.selectedRight
-    local entry = serverData.itemDB[k] or {}
+-- NEW OVERLAY SELECTED WINDOWS
+    local ovY = 17 
+    
+    if uiState.selectedLeft or uiState.selectedRight then
+        local isLeft = uiState.selectedLeft ~= nil
+        local x1 = isLeft and 2 or 36
+        local x2 = isLeft and 24 or 58
+        local currentKey = isLeft and uiState.selectedLeft or uiState.selectedRight
+        
+        -- 1. CLEAR THE AREA
+        buffer.setBackgroundColor(colors.black)
+        for i = 0, 4 do
+            buffer.setCursorPos(x1, ovY + i)
+            buffer.write(string.rep(" ", (x2 - x1) + 1))
+        end
 
-    -- Box moved down to start at Y=18
-    drawBox(x1, x2, 18, 22, "SELECTED", colors.yellow)
-    buffer.setBackgroundColor(colors.black)
-    
-    -- Line 19: Name (Static Label)
-    buffer.setCursorPos(x1+1, 19)
-    buffer.setTextColor(colors.gray)
-    buffer.write("Name: ") 
-    buffer.setTextColor(colors.white)
-    -- Scrolling starts AFTER "Name: " (x1 + 7)
-    renderScrollingText(x1+7, 19, (x2-x1)-7, entry.label or cleanName(k))
-    
-    -- Line 20: ID (Static Label)
-    buffer.setCursorPos(x1+1, 20)
-    buffer.setTextColor(colors.gray)
-    buffer.write("ID: ")
-    buffer.setTextColor(colors.white)
-    buffer.write(k:sub(1, (x2-x1)-5))
-    
-    -- Line 21: Stock
-    buffer.setCursorPos(x1+1, 21)
-    buffer.setTextColor(colors.orange)
-    buffer.write("Stock: ")
-    buffer.setTextColor(colors.white)
-    buffer.write(tostring(entry.count or 0))
-    
-    -- Line 22: Target
-    buffer.setCursorPos(x1+1, 22)
-    buffer.setTextColor(colors.lightBlue)
-    buffer.write("Target: ")
-    buffer.setTextColor(colors.white)
-    buffer.write(tostring(entry.target or 0))
+        -- 2. DRAW THE BOX FRAME
+        drawBox(x1, x2, ovY, ovY + 4, "SELECTED", colors.yellow)
+
+        -- 3. CONTENT LOGIC
+        buffer.setBackgroundColor(colors.black)
+        
+        -- Row 1: Item Name
+        local raw = itemDB[currentKey] or cleanName(currentKey)
+        local fullName = (type(raw) == "table" and raw.label or raw) or "Unknown"
+        buffer.setTextColor(colors.white)
+        renderScrollingText(x1 + 2, ovY + 1, 19, fullName)
+        
+        -- Row 2: ID
+        buffer.setCursorPos(x1 + 2, ovY + 2)
+        buffer.setTextColor(colors.gray)
+        buffer.write("ID: " .. currentKey:sub(1, 18))
+
+        -- Row 3: Managed Info
+        buffer.setCursorPos(x1 + 2, ovY + 3)
+        if isLeft then
+            local stats = cachedManagedStatus[currentKey] or {cur=0, target=0}
+            buffer.setTextColor(colors.orange)
+            buffer.write("Stock: ")
+            buffer.setTextColor(colors.white)
+            -- Flipped: [Current] / [Set Amount]
+            buffer.write(formatNum(stats.cur) .. " / " .. formatNum(stats.target))
+        else
+            buffer.setTextColor(colors.lightGray)
+            buffer.write("Managed: No")
+        end
     end
 
-    -- Center Controls
+    -- CENTER CONTROLS
     local mid = 30
     buffer.setBackgroundColor(colors.gray); buffer.setTextColor(colors.white)
-    buffer.setCursorPos(mid-1, 4); buffer.write("^^") -- +15
-    buffer.setCursorPos(mid-1, 5); buffer.write(" ^") -- +3
-    buffer.setCursorPos(mid-1, 7); buffer.write(" v") -- -3
-    buffer.setCursorPos(mid-1, 8); buffer.write("vv") -- -15
+    buffer.setCursorPos(mid-1, 4); buffer.write("^^")
+    buffer.setCursorPos(mid-1, 5); buffer.write(" ^")
+    buffer.setCursorPos(mid-1, 7); buffer.write(" v")
+    buffer.setCursorPos(mid-1, 8); buffer.write("vv")
+    buffer.setCursorPos(mid-1, 10); buffer.write("<<")
+    buffer.setCursorPos(mid-1, 12); buffer.write(">>")
     
-    -- Transfer Buttons
-    buffer.setBackgroundColor(colors.blue)
-    buffer.setCursorPos(mid-1, 10); buffer.write("<<") -- Add to Managed
-    buffer.setCursorPos(mid-1, 12); buffer.write(">>") -- Remove from Managed
-
-    -- Plus/Minus Buttons (Standard Logic)
--- Adjustment Grid Rendering
-local amounts = {"1", "10", "100", "1k"}
-for i=0, 3 do
-    local x = 26 + (i*2)
-    -- Buttons
-    buffer.setBackgroundColor(colors.green); buffer.setCursorPos(x, 17); buffer.write("+")
-    buffer.setBackgroundColor(colors.red);   buffer.setCursorPos(x, 22); buffer.write("-")
-    
-    -- Labels (placed at 18, 19, 20, 21)
-    buffer.setBackgroundColor(colors.black); buffer.setTextColor(colors.gray)
-    local str = amounts[i+1]
-    for charIdx = 1, #str do
-        buffer.setCursorPos(x, 17 + charIdx) 
-        buffer.write(str:sub(charIdx, charIdx))
-    end
-end
-end
-
-local function renderHistory()
-    drawBox(2, 56, 3, 28, "CRAFTING HISTORY LOG", colors.orange)
-    for i = 1, math.min(18, #serverData.history) do
-        local e = serverData.history[i]
-        buffer.setCursorPos(4, 6 + (i-1))
-        buffer.setTextColor(e.status == "DONE" and colors.green or colors.red)
-        buffer.write(string.format("%-14s | %-5d | %-6s | %-4s", tostring(e.label or cleanName(e.name)):sub(1,14), e.amount or 0, (e.status or "???"):sub(1,6), e.duration or "---"))
-    end
-    buffer.setCursorPos(40, 27); buffer.setBackgroundColor(colors.red); buffer.setTextColor(colors.white); buffer.write(" [CLEAR LOG] ")
-end
-
-local function renderStorage()
-    local usedBytes = math.floor((serverData.stats.totalItems or 0) / 8)
-    local totalBytes = storageData.maxBytes or 0
-    drawBox(2, 29, 3, 12, "STORAGE CAPACITY", colors.cyan)
-    buffer.setCursorPos(4, 5); buffer.setTextColor(colors.white); buffer.write("Bytes Usage")
-    drawBar(4, 6, 17, usedBytes, totalBytes > 0 and totalBytes or 1)
-    
-    drawBox(2, 58, 14, 28, "CELL INVENTORY", colors.lightBlue)
-    local sorted = {}
-    for k in pairs(storageData.counts or {}) do table.insert(sorted, k) end
-    table.sort(sorted)
-    for i, label in ipairs(sorted) do
-        buffer.setCursorPos(4 + (math.floor((i-1)/12)*18), 16 + ((i-1)%12))
-        buffer.setTextColor(colors.white); buffer.write(label:sub(1,3).." Cell: ")
-        buffer.setTextColor(colors.lime);  buffer.write("["..storageData.counts[label].."]")
-    end
-end
-
-local function refreshUI()
-    buffer.setVisible(false)
+    -- STACKED TEXT
     buffer.setBackgroundColor(colors.black)
-    buffer.clear()
-    drawTabs()
+    buffer.setCursorPos(27, 14)
+    buffer.setTextColor(colors.orange)
+    buffer.write("Adjust")
+    buffer.setCursorPos(27, 15)
+    buffer.write("Stock")
 
-    if currentTab == 1 then renderDashboard()
-    elseif currentTab == 2 then renderDebug()
-    elseif currentTab == 3 then renderStockControl()
-    elseif currentTab == 4 then renderHistory()
-    elseif currentTab == 5 then renderStorage()
+    -- BUTTON GRID
+    local amounts = {"1", "10", "100", "1k"}
+    for i = 0, 3 do
+        local x = 26 + (i * 2)
+        buffer.setBackgroundColor(colors.green); buffer.setTextColor(colors.white)
+        buffer.setCursorPos(x, 17); buffer.write("+")
+        buffer.setBackgroundColor(colors.red)
+        buffer.setCursorPos(x, 22); buffer.write("-")
+        
+        buffer.setBackgroundColor(colors.black); buffer.setTextColor(colors.gray)
+        local strAmt = amounts[i+1]
+        for charIdx = 1, #strAmt do
+            buffer.setCursorPos(x, 17 + charIdx)
+            buffer.write(strAmt:sub(charIdx, charIdx))
+        end
+    end
+
+
+    -- TAB 4: HISTORY
+    elseif currentTab == 4 then
+        drawBox(2, 56, 3, 28, "CRAFTING HISTORY LOG", colors.orange)
+        local lineOffset = 0
+        for i = 1, #serverData.history do
+            if lineOffset > 18 then break end
+            local entry = serverData.history[i]
+            buffer.setCursorPos(4, 6 + lineOffset)
+            local nameToShow = entry.displayName or cleanName(entry.name)
+            local status = entry.status or "???"
+            local timeTaken = entry.duration or "---"
+            buffer.setTextColor(status == "DONE" and colors.green or colors.red)
+            local line = string.format("%-14s | %-5d | %-6s | %-4s", 
+                tostring(nameToShow):sub(1,14), entry.amount or 0, status:sub(1,6), timeTaken)
+            buffer.write(line)
+            lineOffset = lineOffset + 1
+        end
+        buffer.setCursorPos(40, 27); buffer.setBackgroundColor(colors.red); buffer.setTextColor(colors.white); buffer.write(" [CLEAR LOG] ")
+
+-- TAB 5: STORAGE
+    elseif currentTab == 5 then
+        -- Math logic
+        local usedBytes = math.floor((serverData.totalItems or 0) / 8)
+        local totalBytes = storageData.maxBytes or 0
+        local availBytes = math.max(0, totalBytes - usedBytes)
+
+        local usedTypes = serverData.usedTypes or 0
+        local totalTypes = storageData.maxTypes or 0
+        local availTypes = math.max(0, totalTypes - usedTypes)
+        
+        -- 1. STORAGE CAPACITY (Visual Bars)
+        drawBox(2, 29, 3, 12, "STORAGE CAPACITY", colors.cyan)
+        buffer.setTextColor(colors.white)
+        buffer.setCursorPos(4, 5); buffer.write("Bytes Usage")
+        drawBar(4, 6, 17, usedBytes, totalBytes > 0 and totalBytes or 1)
+        buffer.setCursorPos(4, 9); buffer.write("Types Usage")
+        drawBar(4, 10, 17, usedTypes, totalTypes > 0 and totalTypes or 1)
+
+        -- 2. SYSTEM DATA (Numerical Breakdown)
+        drawBox(31, 58, 3, 13, "SYSTEM DATA", colors.orange)
+        
+        -- Bytes Column
+        buffer.setTextColor(colors.gray);  buffer.setCursorPos(33, 5); buffer.write("Bytes:")
+        buffer.setTextColor(colors.green); buffer.setCursorPos(33, 6); buffer.write("MAX: "..formatValue(totalBytes))
+        buffer.setTextColor(colors.red);   buffer.setCursorPos(33, 7); buffer.write("USE: "..formatValue(usedBytes))
+        buffer.setTextColor(colors.cyan);  buffer.setCursorPos(33, 8); buffer.write("AVL: "..formatValue(availBytes))
+        
+        -- Types Column
+        buffer.setTextColor(colors.gray);  buffer.setCursorPos(46, 5); buffer.write("Types:")
+        buffer.setTextColor(colors.green); buffer.setCursorPos(46, 6); buffer.write("MAX: "..totalTypes)
+        buffer.setTextColor(colors.red);   buffer.setCursorPos(46, 7); buffer.write("USE: "..usedTypes)
+        buffer.setTextColor(colors.cyan);  buffer.setCursorPos(46, 8); buffer.write("AVL: "..availTypes)
+
+        -- 3. CELL INVENTORY (Drive List)
+        drawBox(2, 58, 14, 28, "CELL INVENTORY", colors.lightBlue)
+        local cIdx = 0
+        local sortedLabels = {}
+        for k in pairs(storageData.counts or {}) do table.insert(sortedLabels, k) end
+        table.sort(sortedLabels)
+
+        for _, label in ipairs(sortedLabels) do
+            local count = storageData.counts[label]
+            -- Renders in two columns to save vertical space
+            buffer.setCursorPos(4 + (math.floor(cIdx/12)*18), 16 + (cIdx%12))
+            buffer.setTextColor(colors.white); buffer.write(label:sub(1,3).." Cell: ")
+            buffer.setTextColor(colors.lime);  buffer.write("["..count.."]")
+            cIdx = cIdx + 1
+        end
     end
     buffer.setVisible(true)
 end
 
--- =================================================================
--- BLOCK 5: INPUT & LOGIC HELPERS
--- =================================================================
-
-local function adjustStock(itemKey, amount)
-    if not itemKey or not serverData.itemDB[itemKey] then return end
-
-    -- 1. Calculate the new final target
-    local currentTarget = serverData.itemDB[itemKey].target or 0
-    local newTarget = math.max(0, currentTarget + amount)
-
-    -- 2. Update local UI immediately so it feels responsive
-    serverData.itemDB[itemKey].target = newTarget
-
-    -- 3. Transmit using the fields the Server actually checks (type and name)
-    modem.transmit(1429, 1428, { 
-        type = "SET_RULE", 
-        name = itemKey, 
-        target = newTarget 
-    })
-    
-    -- Debug logging
-    if debugLog[1429] then
-        debugLog[1429].lastSeen = os.date("%H:%M:%S")
-        debugLog[1429].status = "Sent SET_RULE"
-    end
-end
-
-local function handleMouseClick(event, button, x, y)
-    -- 1. TAB SWITCHING
-    if y == 1 then
-        currentTab = math.min(5, math.floor((x - 1) / 10) + 1)
-        refreshUI()
-        return
-    end
-
-    if currentTab == 3 then -- STOCK CONTROL
-        -- SCROLLING LOGIC (Center Strip)
-        if x >= 29 and x <= 31 then
-            local scrollAmt = 0
-            if y == 4 then scrollAmt = -15      -- ^^ (Page Up)
-            elseif y == 5 then scrollAmt = -3   -- ^  (Up 3)
-            elseif y == 7 then scrollAmt = 3    -- v  (Down 3)
-            elseif y == 8 then scrollAmt = 15   -- vv (Page Down)
-            end
-            
-            -- Apply scroll to the active side
-            if uiState.selectedRight then
-                stockScroll = math.max(1, stockScroll + scrollAmt)
-            else
-                managedScroll = math.max(1, managedScroll + scrollAmt)
-            end
-        end
-
-        -- TRANSFER LOGIC (<< and >>)
-        if x >= 29 and x <= 31 then
-            if y == 10 and uiState.selectedRight then
-                -- Move Craftable to Managed (Set target to 10)
-                adjustStock(uiState.selectedRight, 10)
-                uiState.selectedLeft = uiState.selectedRight
-                uiState.selectedRight = nil
-            elseif y == 12 and uiState.selectedLeft then
-                -- Remove from Managed (Set target to 0)
-                local currentTarget = serverData.itemDB[uiState.selectedLeft].target or 0
-                adjustStock(uiState.selectedLeft, -currentTarget)
-                uiState.selectedRight = uiState.selectedLeft
-                uiState.selectedLeft = nil
-            end
-        end
-
-        -- SELECTION LOGIC
-        if y >= 4 and y <= 21 then
-            if x >= 2 and x <= 24 then -- Managed Column
-                local idx = (y - 3) + (managedScroll - 1)
-                uiState.selectedLeft = cachedManagedKeys[idx]
-                uiState.selectedRight = nil
-            elseif x >= 36 and x <= 58 then -- Craftable Column
-                local idx = (y - 3) + (stockScroll - 1)
-                if cachedCraftableList[idx] then
-                    uiState.selectedRight = cachedCraftableList[idx].key
-                    uiState.selectedLeft = nil
-                end
-            end
-        end
-
-        -- ADJUSTMENT BUTTONS (+ / -)
-        local activeKey = uiState.selectedLeft or uiState.selectedRight
-        if activeKey and (y == 17 or y == 22) then
-            local amounts = {1, 10, 100, 1000}
-            for i = 0, 3 do
-                if x == 26 + (i * 2) then
-                    local change = (y == 17) and amounts[i+1] or -amounts[i+1]
-                    adjustStock(activeKey, change)
-                end
-            end
-        end
-    end
-    
-    refreshUI()
-end
 
 -- =================================================================
--- BLOCK 6: MAIN EXECUTION LOOP
+-- BLOCK 5: INTERACTION LOOP
 -- =================================================================
-
-local scrollTimer = os.startTimer(0.5)
-refreshUI()
+local scrollTimer = os.startTimer(0.5) 
 
 while true do
-    local eventData = {os.pullEvent()}
-    local ev = eventData[1]
+    local ev, side, p1, p2, msg = os.pullEvent()
     
-if ev == "mouse_click" or ev == "monitor_touch" then
-        handleMouseClick(unpack(eventData))
-        
-    elseif ev == "timer" and eventData[2] == scrollTimer then
+    if ev == "timer" and side == scrollTimer then
         scrollPos = scrollPos + 1
         scrollTimer = os.startTimer(0.5) 
         refreshUI()
         
-    elseif ev == "modem_message" then
-        local p1, msg = eventData[3], eventData[5]
-        if debugLog[p1] then
-            debugLog[p1].lastSeen = os.date("%H:%M:%S")
-            debugLog[p1].status = "Active"
-        end
-
-        if type(msg) == "table" then
-            -- Storage Cell Updates
-            if p1 == 1422 and msg.items then
-                storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
-                for _, it in ipairs(msg.items) do
-                    if driveSpecs[it.name] then
-                        local cap = (type(driveSpecs[it.name]) == "table") and (driveSpecs[it.name][it.damage] or 0) or driveSpecs[it.name]
-                        local label = it.name:match("storage_cell_(%d+k)") or "1k"
-                        storageData.maxBytes = storageData.maxBytes + (cap * it.count)
-                        storageData.counts[label] = (storageData.counts[label] or 0) + it.count
+    elseif ev == "monitor_touch" then
+        local tx, ty = p1, p2
+        
+        -- TAB NAVIGATION (Row 1)
+        if ty == 1 then
+            currentTab = math.min(5, math.floor((tx - 1) / 10) + 1)
+            
+        elseif currentTab == 3 then
+            -- 1. CENTER COLUMN (Scrolling & Transfer)
+            if tx >= 26 and tx <= 34 then
+                -- Scrolling with Clamping
+                if ty == 4 then -- Page Up
+                    stockScroll = math.max(1, stockScroll - 18)
+                    managedScroll = math.max(1, managedScroll - 18)
+                elseif ty == 5 then -- Line Up
+                    stockScroll = math.max(1, stockScroll - 1)
+                    managedScroll = math.max(1, managedScroll - 1)
+                elseif ty == 7 then -- Line Down
+                    managedScroll = math.min(math.max(1, #cachedManagedKeys - 17), managedScroll + 1)
+                    stockScroll = math.min(math.max(1, #cachedCraftableList - 17), stockScroll + 1)
+                elseif ty == 8 then -- Page Down
+                    managedScroll = math.min(math.max(1, #cachedManagedKeys - 17), managedScroll + 18)
+                    stockScroll = math.min(math.max(1, #cachedCraftableList - 17), stockScroll + 18)
+                
+                -- Transfer Logic
+                elseif ty == 10 and uiState.selectedRight then 
+                    modem.transmit(1429, 1422, {type="SET_RULE", name=uiState.selectedRight, target=100})
+                    lastStockRefresh = 0 
+                elseif ty == 12 and uiState.selectedLeft then 
+                    modem.transmit(1429, 1422, {type="SET_RULE", name=uiState.selectedLeft, target=0})
+                    lastStockRefresh = 0 
+                
+                -- Adjustment (+ / -)
+                elseif (ty == 17 or ty == 22) and uiState.selectedLeft then
+                    local amounts = {1, 10, 100, 1000}
+                    local col = math.floor((tx - 26) / 2) + 1
+                    local amt = amounts[col]
+                    if amt then
+                        local cur = serverData.rules[uiState.selectedLeft] or 0
+                        cur = (ty == 17) and (cur + amt) or math.max(0, cur - amt)
+                        serverData.rules[uiState.selectedLeft] = cur
+                        modem.transmit(1429, 1422, {type="SET_RULE", name=uiState.selectedLeft, target=cur})
+                        lastStockRefresh = 0 
                     end
                 end
 
-            -- Unified Data Sync (Channel 1428)
-            elseif p1 == 1428 then 
-                serverData.itemDB = msg.itemDB or {}
-                serverData.activeJobs = msg.activeJobs or {}
-                serverData.stats = msg.stats or {}
-                
-                -- Rebuild the sorted list for the UI
-                local newList = {}
-                for key, data in pairs(serverData.itemDB) do
-                    data.key = key 
-                    table.insert(newList, data)
+            -- 2. SELECTION HITBOXES (Corrected indentation/nesting)
+            elseif tx < 26 and ty >= 4 and ty <= 21 then -- Managed List
+                local idx = (ty - 3) + (managedScroll - 1)
+                local clickedKey = cachedManagedKeys[idx]
+                if clickedKey then 
+                    if uiState.selectedLeft == clickedKey then
+                        uiState.selectedLeft = nil
+                    else
+                        uiState.selectedLeft = clickedKey
+                        uiState.selectedRight = nil 
+                    end
                 end
-                table.sort(newList, function(a, b) 
-                    return (a.label or "") < (b.label or "") 
-                end)
-                serverData.items = newList
+            elseif tx > 34 and ty >= 4 and ty <= 21 then -- Craftables List
+                local idx = (ty - 3) + (stockScroll - 1)
+                local clickedItem = cachedCraftableList[idx]
+                if clickedItem then 
+                    if uiState.selectedRight == clickedItem.key then
+                        uiState.selectedRight = nil
+                    else
+                        uiState.selectedRight = clickedItem.key
+                        uiState.selectedLeft = nil 
+                    end
+                end
+            end -- End of Selection Hitboxes
+        end -- End of currentTab == 3 logic
+        refreshUI()
+
+elseif ev == "modem_message" then
+        if type(msg) == "table" then
+            if debugLog[p1] then
+                debugLog[p1].status = "ONLINE"
+                debugLog[p1].lastSeen = os.date("%H:%M:%S")
             end
+
+            -- CHANNEL 1422: Cell Capacity Logic
+            if p1 == 1422 and msg.items then
+                -- Reset totals before recalculating from the new list
+                storageData = { maxBytes = 0, maxTypes = 0, counts = {} }
+                for _, it in ipairs(msg.items) do
+                    if driveSpecs[it.name] then
+                        local cap = (type(driveSpecs[it.name]) == "table") 
+                                    and (driveSpecs[it.name][it.damage] or 0) 
+                                    or driveSpecs[it.name]
+                        
+                        local label = (type(driveSpecs[it.name]) == "table") 
+                                      and (math.floor(cap/1024).."k") 
+                                      or (it.name:match("storage_cell_(%d+k)") or "1k")
+                        
+                        storageData.maxBytes = storageData.maxBytes + (cap * it.count)
+                        storageData.maxTypes = storageData.maxTypes + (63 * it.count)
+                        storageData.counts[label] = (storageData.counts[label] or 0) + it.count
+                    end
+                end
+            
+            -- CHANNEL 1428: Your existing Main Dashboard Data
+            elseif p1 == 1428 then 
+                serverData = msg 
+            end
+            
             refreshUI()
         end
     end

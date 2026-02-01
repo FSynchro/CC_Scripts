@@ -1,5 +1,6 @@
 -- =================================================================
 -- BLOCK 1: INITIALIZATION & PERIPHERALS
+-- Sets up modems, AE2 interface, and networking channels.
 -- =================================================================
 local DATA_CHAN, ORDER_CHAN = 1428, 1429
 local modem = peripheral.find("modem", function(_, p) return p.isWireless() end) or error("No Modem")
@@ -9,6 +10,7 @@ modem.open(ORDER_CHAN)
 
 -- =================================================================
 -- BLOCK 2: PERSISTENCE HELPERS
+-- Saves and loads .dat files so data survives a server reboot.
 -- =================================================================
 local function saveTable(file, data)
     local f = fs.open(file, "w")
@@ -27,171 +29,171 @@ end
 
 -- =================================================================
 -- BLOCK 3: STATE VARIABLES
+-- Loads databases and initializes the translation queue.
 -- =================================================================
-local currentTranslation = nil
+
+local stockRules = loadTable("autostock.dat")
 local history = loadTable("job_history.dat")
 local itemDB = loadTable("item_db.dat")
 local activeJobs = {} 
 local translationQueue = {}
-local stats = { 
-    completed = 0, 
-    failed = 0, 
-    managedEnabled = true, 
-    queueSize = 0,
-    failCooldowns = {}
-}
-local statusMessages = {
-    missing = "Missing ingredients/recipe!",
-    canceled = "Job canceled.",
-    stalled = "Job stalled!",
-    finished = "Completed: %s %s",
-    unknown = "Crafting: %s (%s/%s)"
-}
+local stats = { completed = 0, failed = 0, managedEnabled = true, queueSize = 0 }
 
-print("Server v28.0 Online")
-
-local function getFriendlyStatus(entry)
-    if not entry then return "" end
-    if entry.isCanceled then return statusMessages.canceled end
-    if entry.isFinished then 
-        return string.format(statusMessages.finished, entry.count or 0, entry.label or "Item") 
-    end
-    
-    local s = entry.jobStatus or "unknown"
-    if s == "missing" then return statusMessages.missing
-    elseif s == "stalled" then return statusMessages.stalled
-    else
-        return string.format(statusMessages.unknown, entry.label or "Item", entry.progress or 0, entry.jobTarget or 0)
-    end
-end
+print("Server v27.0 Online - Precision Mode")
 
 -- =================================================================
--- MAIN CONTROL LOOP
+-- BLOCK 4: MAIN CONTROL LOOP
 -- =================================================================
 while true do 
     local successI, rawItems = pcall(me.listAvailableItems)
-    local currentTime = os.epoch("utc") / 1000
+    local itemMap = {} -- <--- DECLARE THIS HERE (Outside the IF)
     
     if successI then
-        -- Reset counts
-        for _, entry in pairs(itemDB) do entry.count = 0 end
-
-        local queueLookup = {}
-        for _, q in ipairs(translationQueue) do queueLookup[q.key] = true end
-
+        -- Remove the 'local' from the line below since we defined it above
+        itemMap = {} 
         for _, it in ipairs(rawItems) do
             local key = it.name .. ":" .. (it.damage or 0)
-            
-if not itemDB[key] then
-        itemDB[key] = { 
-            label = "Awaiting Meta...", 
-            target = 0, 
-            count = 0, 
-            isCraftable = false 
-        }
-    end
+            itemMap[key] = (itemMap[key] or 0) + it.count
 
-            if itemDB[key].label == "Awaiting Meta..." and not queueLookup[key] then
-                table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
-                queueLookup[key] = true 
+            if it.isCraftable then
+                if not itemDB[key] or type(itemDB[key]) ~= "table" or itemDB[key].label == "ERROR: No Meta" then
+                    itemDB[key] = { label = "AwaitingTranslation", managed = (stockRules[key] ~= nil) }
+                    
+                    local inQueue = false
+                    for _, q in ipairs(translationQueue) do if q.key == key then inQueue = true break end end
+                    if not inQueue then
+                        table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+                    end
+                end
             end
+        end
 
-            itemDB[key].count = it.count
-            itemDB[key].isCraftable = it.isCraftable
-        end 
-    end
+        -- =============================================================
+        -- BLOCK 5: PRECISION TRANSLATOR 
+        -- Fetches real "Display Names" from AE2
+        -- =============================================================
 
-    -- =============================================================
-    -- BLOCK 5: TRANSLATOR LOGIC (BATCH MODE)
-    -- =============================================================
-    local batchSize = 15
-    local processedThisCycle = 0
+        -- PRECISION TRANSLATOR 
+if #translationQueue > 0 then
+            local nextItem = table.remove(translationQueue, 1)
+            stats.currentItem = nextItem.key
+            stats.writeStatus = "In Progress"
 
-    while #translationQueue > 0 and processedThisCycle < batchSize do
-        local nextItem = translationQueue[1]
-        currentTranslation = nextItem 
-        
-        local ok, handle = pcall(me.findItem, { name = nextItem.name, damage = nextItem.damage or 0 })
-        if ok and handle then
-            local mOk, meta = pcall(handle.getMetadata)
-            if mOk and meta and meta.displayName then
-                if itemDB[nextItem.key] then itemDB[nextItem.key].label = meta.displayName end
-                table.remove(translationQueue, 1)
-                processedThisCycle = processedThisCycle + 1
-            else
-                table.insert(translationQueue, table.remove(translationQueue, 1))
-                processedThisCycle = processedThisCycle + 1
+            local query = nextItem.name .. "@" .. nextItem.damage
+            local ok, handle = pcall(me.findItem, query)
+            
+            if ok and handle then
+                local mOk, meta = pcall(handle.getMetadata)
+                if mOk and meta and meta.displayName then
+                    itemDB[nextItem.key] = { 
+                        label = meta.displayName, 
+                        managed = (stockRules[nextItem.key] ~= nil) 
+                    }
+                    saveTable("item_db.dat", itemDB)
+                    stats.writeStatus = "Complete"
+                else
+                    itemDB[nextItem.key] = { label = "ERROR: No Meta", managed = false }
+                    stats.writeStatus = "Failed"
+                end
             end
         else
-            table.remove(translationQueue, 1)
+            stats.currentItem = "Idle"
+            stats.writeStatus = "Idle"
         end
+        stats.queueSize = #translationQueue
     end
 
-    if processedThisCycle > 0 then saveTable("item_db.dat", itemDB) end
-    stats.queueSize = #translationQueue
-    stats.currentEntry = currentTranslation
-
-    -- =============================================================
+-- =============================================================
     -- BLOCK 6: JOB MONITORING
     -- =============================================================
-    for _, it in pairs(itemDB) do
-        it.isCrafting = false
-        it.jobStatus = nil
-        it.isFinished = nil
-        it.isCanceled = nil
-    end
+    stats.failCooldowns = stats.failCooldowns or {} 
+    local currentTime = os.epoch("utc") / 1000
 
     for i = #activeJobs, 1, -1 do
         local job = activeJobs[i]
-        local ok, finished = pcall(job.handle.isFinished)
-        local ok2, canceled = pcall(job.handle.isCanceled)
-        local ok3, status = pcall(job.handle.status)
-        
-        if itemDB[job.key] then
-            itemDB[job.key].isCrafting = true
-            itemDB[job.key].jobStatus = status or "running"
-            itemDB[job.key].isFinished = finished
-            itemDB[job.key].isCanceled = canceled
-            itemDB[job.key].progress = job.progress or 0
-            itemDB[job.key].jobTarget = job.target or 0
-            itemDB[job.key].friendlyStatus = getFriendlyStatus(itemDB[job.key])
-        end
+        if not job.expiry then
+            local ok, finished = pcall(job.handle.isFinished)
+            local ok2, canceled = pcall(job.handle.isCanceled)
+            local ok3, status = pcall(job.handle.status)
+            
+            if (ok and finished) or (ok2 and canceled) then
+                local duration = currentTime - (job.startTime or currentTime)
+                local actualStatus = status or "unknown"
+                
+                if ok3 and actualStatus == "finished" then
+                    stats.completed = (stats.completed or 0) + 1
+                else
+                    stats.failed = (stats.failed or 0) + 1
+                    job.expiry = currentTime + 30 
+                    stats.failCooldowns[job.key] = job.expiry
+                end
 
-        if (ok and finished) or (ok2 and canceled) then
-            -- History logic can be added here
-            table.remove(activeJobs, i)
-        else
-            if successI and itemDB[job.key] then
-                job.progress = itemDB[job.key].count - job.startCount
+                table.insert(history, 1, { 
+                    name = job.key, 
+                    displayName = job.displayName or job.key, 
+                    amount = job.target, 
+                    status = (actualStatus == "finished") and "DONE" or "FAIL",
+                    rawStatus = actualStatus,
+                    duration = string.format("%.2fs", duration)
+                })
+                
+                if #history > 50 then table.remove(history) end
+                saveTable("job_history.dat", history)
+
+                if actualStatus == "finished" then
+                    table.remove(activeJobs, i)
+                end
+            else
+                -- Progress update logic
+                -- Note: itemMap is only available if successI was true
+                if successI then
+                    job.progress = (itemMap[job.key] or 0) - job.startCount
+                end
+                job.rawStatus = "running"
             end
         end
     end
 
+    -- CLEANUP LOOP
+    for i = #activeJobs, 1, -1 do
+        if activeJobs[i].expiry and currentTime > activeJobs[i].expiry then
+            table.remove(activeJobs, i)
+        end
+    end
+
+
+-- =============================================================
+    -- BLOCK 7: AUTOCRAFT LOGIC
     -- =============================================================
-    -- BLOCK 7: AUTOCRAFT LOGIC (CENTRALIZED)
-    -- =============================================================
+    -- We only run this if we have a fresh rawItems list from AE2
     if stats.managedEnabled and successI then
-        for key, it in pairs(itemDB) do
-            local target = it.target or 0
+        for _, it in ipairs(rawItems) do
+            local key = it.name .. ":" .. (it.damage or 0)
+            local target = stockRules[key]
             local cooldown = stats.failCooldowns[key] or 0
             
-            if target > 0 and it.count < target and it.isCraftable then
+            if target and target > 0 and it.count < target and it.isCraftable then
                 local busy = false
-                for _, j in pairs(activeJobs) do if j.key == key then busy = true break end end
+                for _, j in pairs(activeJobs) do 
+                    if j.key == key then busy = true break end 
+                end
 
                 if not busy and currentTime > cooldown then
-                    local name, damage = key:match("([^:]+):([^:]+)")
-                    local ok, itemHandle = pcall(me.findItem, { name = name, damage = tonumber(damage) })
-                    
+                    local ok, itemHandle = pcall(me.findItem, { name = it.name, damage = it.damage or 0 })
                     if ok and itemHandle then
                         local needed = target - it.count
                         local craftOk, handle = pcall(itemHandle.craft, needed)
                         
                         if craftOk and type(handle) == "table" then
                             table.insert(activeJobs, {
-                                handle = handle, key = key, id = os.epoch("utc"), 
-                                displayName = it.label or name, target = needed, 
-                                startCount = it.count, progress = 0, startTime = currentTime
+                                handle = handle, 
+                                key = key, 
+                                id = os.epoch("utc"), 
+                                displayName = (type(itemDB[key]) == "table" and itemDB[key].label) or it.label or it.name,
+                                target = needed, 
+                                startCount = it.count, 
+                                progress = 0,
+                                startTime = currentTime
                             })
                         else
                             stats.failCooldowns[key] = currentTime + 10
@@ -202,8 +204,10 @@ if not itemDB[key] then
         end
     end
 
-    -- =============================================================
-    -- BLOCK 8: NETWORK & CPUS
+
+
+-- =============================================================
+    -- BLOCK 8: NETWORK & CPUS (Modified to include Storage Totals)
     -- =============================================================
     local cpus = me.getCraftingCPUs()
     local cpuData = { total = #cpus, busy = 0, totalCoPro = 0, maxStorage = 0, avgCoPro = 0 }
@@ -214,31 +218,48 @@ if not itemDB[key] then
     end
     if cpuData.total > 0 then cpuData.avgCoPro = cpuData.totalCoPro / cpuData.total end
 
+    -- ADD THIS PART HERE: Summarize items for the STOR tab
+    local totalItemsCount = 0
+    local usedTypesCount = 0
+    if successI and rawItems then
+        usedTypesCount = #rawItems -- Each entry in the list is a unique type
+        for _, it in ipairs(rawItems) do
+            totalItemsCount = totalItemsCount + it.count
+        end
+    end
+
     modem.transmit(DATA_CHAN, DATA_CHAN, {
         type = "SERVER_SYNC", 
+        items = rawItems, 
         itemDB = itemDB,
         activeJobs = activeJobs, 
         history = history, 
+        rules = stockRules, 
         stats = stats,
-        cpus = cpuData
+        cpus = cpuData,
+        totalItems = totalItemsCount,
+        usedTypes = usedTypesCount
     })
 
     -- =============================================================
-    -- BLOCK 9: EVENT LISTENER (FLATTENED)
+    -- BLOCK 9: EVENT LISTENER
     -- =============================================================
     local pulseTimer = os.startTimer(2.0)
-    -- No nested while loop here anymore
-    local event, side, chan, replyChan, msg = os.pullEvent()
-    
-    if event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
-        if msg.type == "SET_RULE" and itemDB[msg.name] then 
-            itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
-            saveTable("item_db.dat", itemDB)
-        elseif msg.type == "TOGGLE_MGMT" then 
-            stats.managedEnabled = not stats.managedEnabled
-        elseif msg.type == "CLEAR_HISTORY" then 
-            history = {}
-            saveTable("job_history.dat", history) 
+    while true do
+        local event, side, chan, replyChan, msg = os.pullEvent()
+        if event == "timer" and side == pulseTimer then 
+            break 
+        elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
+            if msg.type == "SET_RULE" then 
+                if msg.target <= 0 then stockRules[msg.name] = nil
+                else stockRules[msg.name] = msg.target end
+                saveTable("autostock.dat", stockRules)
+            elseif msg.type == "TOGGLE_MGMT" then 
+                stats.managedEnabled = not stats.managedEnabled 
+            elseif msg.type == "CLEAR_HISTORY" then 
+                history = {}
+                saveTable("job_history.dat", history) 
+            end
         end
     end
 end
