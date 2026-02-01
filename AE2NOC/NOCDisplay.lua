@@ -102,78 +102,33 @@ end
 
 local function updateStockCache()
     local now = os.epoch("utc") / 1000
-    if (now - lastStockRefresh) < 20 and #cachedManagedKeys > 0 then return end
+    if (now - lastStockRefresh) < 2 then return end
     
     local itemDB = serverData.itemDB or {}
-    local rules = serverData.rules or {}
-    local items = serverData.items or {}
-    local jobs = serverData.jobs or {} 
-
-    -- 1. SORTED MANAGED LIST
-    local keys = {}
-    for k in pairs(rules) do table.insert(keys, k) end
-    table.sort(keys, function(a, b)
-        local labelA = tostring(itemDB[a] and (type(itemDB[a]) == "table" and itemDB[a].label or itemDB[a]) or cleanName(a))
-        local labelB = tostring(itemDB[b] and (type(itemDB[b]) == "table" and itemDB[b].label or itemDB[b]) or cleanName(b))
-        return labelA:lower() < labelB:lower()
-    end)
-    cachedManagedKeys = keys
-
-    -- 2. CALCULATE STATUS & COLORS
-    cachedManagedStatus = {}
-    for _, key in ipairs(keys) do
-        local target = rules[key]
-        local cur = 0
-        for _, it in ipairs(items) do 
-            if (it.name .. ":" .. (it.damage or 0)) == key then cur = it.count break end 
-        end
-
-        local statusColor = colors.white
-        if cur >= target then
-            statusColor = colors.green
-        else
-            -- Check for active jobs
-            local isCrafting = false
-            local isBlocked = false
-            for _, job in ipairs(jobs) do
-                local jobKey = job.name .. ":" .. (job.damage or 0)
-                if jobKey == key then
-                    isCrafting = true
-                    if job.isBlocked or job.status == "MissingIngredients" then
-                        isBlocked = true
-                    end
-                    break
-                end
-            end
-
-            if isCrafting then
-                statusColor = isBlocked and colors.red or colors.cyan
-            else
-                statusColor = colors.white -- Or orange if you want "Waiting to start"
-            end
-        end
-        cachedManagedStatus[key] = {color = statusColor, cur = cur, target = target}
-    end
-
-    -- 3. SORTED CRAFTABLE LIST (Right Side)
-    local newList = {}
-    for _, it in ipairs(items) do
-        -- FIX: Skip if the item entry is nil or missing a name
-        if it and it.name then 
-            local k = it.name .. ":" .. (it.damage or 0)
-            
-            -- Only add if it's craftable AND not already in our rules
-            if it.isCraftable and not rules[k] then 
-                local raw = itemDB[k] or it.label or cleanName(it.name)
-                local dName = type(raw) == "table" and raw.label or raw
-                table.insert(newList, {key=k, label=dName}) 
-            end
+    
+    -- 1. SORTED MANAGED LIST (Items where target > 0)
+    local managedKeys = {}
+    for key, entry in pairs(itemDB) do
+        if entry.target and entry.target > 0 then
+            table.insert(managedKeys, key)
         end
     end
-    table.sort(newList, function(a, b) 
-        return tostring(a.label):lower() < tostring(b.label):lower() 
+    table.sort(managedKeys, function(a, b)
+        return (itemDB[a].label or a):lower() < (itemDB[b].label or b):lower()
     end)
-    cachedCraftableList = newList
+    cachedManagedKeys = managedKeys
+
+    -- 2. SORTED CRAFTABLE LIST (isCraftable = true but target is 0)
+    local craftableList = {}
+    for key, entry in pairs(itemDB) do
+        if entry.isCraftable and (not entry.target or entry.target == 0) then
+            table.insert(craftableList, {key = key, label = entry.label or cleanName(key)})
+        end
+    end
+    table.sort(craftableList, function(a, b)
+        return a.label:lower() < b.label:lower()
+    end)
+    cachedCraftableList = craftableList
 
     lastStockRefresh = now
 end
@@ -239,11 +194,29 @@ local function refreshUI()
         -- --- MANAGED STATS BOX ---
         drawBox(2, 29, 3, 12, "MANAGED STATS", colors.yellow)
         
-        local ruleCount = 0; for _ in pairs(serverData.rules or {}) do ruleCount = ruleCount + 1 end
-        local recipeCount = 0; for _ in pairs(serverData.itemDB or {}) do recipeCount = recipeCount + 1 end
+-- Calculate counts from itemDB
+local recipeCount = 0
+local totalEntries = 0
+for _, entry in pairs(itemDB) do
+    totalEntries = totalEntries + 1
+    if entry.isCraftable then
+        recipeCount = recipeCount + 1
+    end
+end
+
+-- Render to Buffer
+buffer.setCursorPos(2, 4)
+buffer.setTextColor(colors.cyan)
+buffer.write("Recipes: ")
+buffer.setTextColor(colors.white)
+buffer.write(tostring(recipeCount))
+
+buffer.setCursorPos(2, 5)
+buffer.setTextColor(colors.cyan)
+buffer.write("Items:   ")
+buffer.setTextColor(colors.white)
+buffer.write(tostring(totalEntries))
         
-        buffer.setCursorPos(4, 5);  buffer.write("Items Managed: ".. ruleCount)
-        buffer.setCursorPos(4, 7);  buffer.write("Recipes:       ".. recipeCount)
         buffer.setCursorPos(4, 9);  buffer.write("Jobs Done:     ".. (serverData.stats.completed or 0))
         buffer.setCursorPos(4, 11); buffer.write("Active Jobs:   ".. #jobs)
 
@@ -332,7 +305,8 @@ local function refreshUI()
 -- DEBUG TAB RENDERING (NOCDisplay.lua)
 -- =============================================================
 -- Grab the data from serverData, but default to empty tables if they don't exist yet
-local stats = serverData.stats or {}
+local stats = serverData.stats or { completed = 0, managedEnabled = true, queueSize = 0 }
+local itemDB = serverData.itemDB or {}
 local cpus = serverData.cpus or {}
 local entry = stats.currentEntry -- This will be nil if no job is running
 
