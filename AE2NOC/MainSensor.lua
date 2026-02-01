@@ -308,15 +308,15 @@ end
         usedTypes = usedTypesCount
     })
 
-    -- =============================================================
-    -- BLOCK 9: EVENT LISTENER
-    -- =============================================================
+-- =============================================================
+-- BLOCK 9: EVENT LISTENER
+-- =============================================================
     local pulseTimer = os.startTimer(2.0)
     while true do
         local event, side, chan, replyChan, msg = os.pullEvent()
         
         if event == "timer" and side == pulseTimer then 
-            break -- Breaks Block 9 loop to refresh Block 4
+            break -- Refresh the main loop
             
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
             if msg.type == "SET_RULE" then 
@@ -332,5 +332,5 @@ end
                 saveTable("job_history.dat", history) 
             end
         end 
-    end -- End of Block 9 While
-end -- End of Block 4 While
+    end
+end
