@@ -1,5 +1,5 @@
 -- =================================================================
--- PowerCTRLWirClient.lua - FULL RESTORED VERSION
+-- PowerCTRLWirClient.lua - FIXED & RESTORED
 -- =================================================================
 local channel = 4335 
 local aeChannel = 1428  
@@ -55,7 +55,7 @@ local function drawReactorArt(x, y, active)
     mon.setTextColor(colors.gray); mon.write("  [")
     mon.setTextColor(colors.red);  mon.write("#####")
     mon.setTextColor(colors.gray); mon.write("]  ")
-    mon.setCursorPos(x, y+1); mon.write(" /       \\ ")
+    mon.setCursorPos(x, y+1); mon.write(" /        \\ ")
     mon.setCursorPos(x, y+2); mon.write("|   ")
     mon.setTextColor(active and colors.lime or colors.red)
     mon.write("(o)"); mon.setTextColor(colors.gray); mon.write("   |")
@@ -154,28 +154,22 @@ while true do
     
     if ev == "modem_message" then
         if p2 == channel then
-            if type(p4) == "table" and p4.type == "DATA" then 
-                lastData = p4 
-            end
-elseif p2 == aeChannel then
-    if type(p4) == "table" and p4.type == "SERVER_SYNC" then
-        local foundYello = 0
-        if p4.items then
-            for _, item in ipairs(p4.items) do
-                -- Convert name to lowercase for a safer comparison
-                local name = string.lower(item.name or "")
-                
-                -- Check for various known Yellorium IDs
-                if name:find("yellorium_ingot") or 
-                   name:find("ingotyellorium") or 
-                   name:find("yelloriumingot") then
-                    foundYello = foundYello + (item.count or 0)
+            if type(p4) == "table" and p4.type == "DATA" then lastData = p4 end
+        elseif p2 == aeChannel then
+            if type(p4) == "table" and p4.type == "SERVER_SYNC" then
+                local foundYello = 0
+                if p4.items then
+                    for _, item in ipairs(p4.items) do
+                        local name = string.lower(item.name or "")
+                        if name:find("yellorium") and name:find("ingot") then
+                            foundYello = foundYello + (item.count or 0)
+                        end
+                    end
                 end
+                aeData.yellorium = foundYello
             end
         end
-        aeData.yellorium = foundYello
-    end
-    logMsg("RECV", p4)
+        logMsg("RECV", p4)
 
     elseif ev == "monitor_touch" then
         local x, y = p2, p3
@@ -184,16 +178,10 @@ elseif p2 == aeChannel then
             elseif x >= 15 and x <= 25 then currentView = "MODEM" end
         elseif currentView == "REACTOR" then
             if y == 14 and x >= 4 and x <= 20 then 
-                pendingAuto = not (lastData and lastData.auto)
-                sendCmd("TOGGLE_AUTO")
+                pendingAuto = not (lastData and lastData.auto); sendCmd("TOGGLE_AUTO")
             elseif y == 16 then
-                if x >= 4 and x <= 13 then 
-                    pendingActive = true
-                    sendCmd("ON")
-                elseif x >= 15 and x <= 24 then 
-                    pendingActive = false
-                    sendCmd("OFF") 
-                end
+                if x >= 4 and x <= 13 then pendingActive = true; sendCmd("ON")
+                elseif x >= 15 and x <= 24 then pendingActive = false; sendCmd("OFF") end
             end
         end
 
