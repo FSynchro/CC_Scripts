@@ -328,22 +328,32 @@ local function refreshUI()
             friendlyName = db[currentKey].label or "Unknown"
         end
 
+-- =============================================================
+-- DEBUG TAB RENDERING (NOCDisplay.lua)
+-- =============================================================
+-- Grab the data from serverData, but default to empty tables if they don't exist yet
+local stats = serverData.stats or {}
+local cpus = serverData.cpus or {}
+local entry = stats.currentEntry -- This will be nil if no job is running
+
 -- 1. Scheduler Header
 buffer.setCursorPos(4, 9)
 buffer.setTextColor(colors.orange)
 buffer.write("TRANSLATION SCHEDULER")
+
+-- 2. Queue Size (Safety check for nil)
 buffer.setCursorPos(4, 10)
 buffer.setTextColor(colors.white)
 buffer.write("Queue Size:    " .. (stats.queueSize or 0))
 
--- 2. Current Entry Section
+-- 3. Current Entry Section
 buffer.setCursorPos(4, 12)
 buffer.setTextColor(colors.gray)
 buffer.write("--- Current Entry ---")
 
-if entry then
-    -- Get display name from our DB if available
-    local dbEntry = serverData.itemDB[entry.key] or {}
+if entry and entry.key then
+    -- Get display name from our DB mirror
+    local dbEntry = (serverData.itemDB and serverData.itemDB[entry.key]) or {}
     local dName = dbEntry.label or "Translating..."
     
     buffer.setCursorPos(4, 13)
@@ -351,12 +361,6 @@ if entry then
     buffer.write("displayName:   ")
     buffer.setTextColor(colors.yellow)
     buffer.write(tostring(dName):sub(1, 25))
-
-    buffer.setCursorPos(4, 14)
-    buffer.setTextColor(colors.white)
-    buffer.write("itemname:      ")
-    buffer.setTextColor(colors.gray)
-    buffer.write(tostring(entry.key):sub(1, 25))
 
     -- Write Status Logic: True if we have a label in DB, else In Progress
     local isWritten = (dbEntry.label ~= nil and dbEntry.label ~= "Awaiting Meta...")
