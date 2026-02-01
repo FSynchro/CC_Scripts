@@ -73,34 +73,6 @@ while true do
             itemDB[key].isCraftable = it.isCraftable
             itemDB[key].target = stockRules[key] or 0
             itemDB[key].managed = (itemDB[key].target > 0)
-
-            -- Autocraft Logic
-            if stats.managedEnabled then
-                local target = itemDB[key].target
-                local cooldown = stats.failCooldowns[key] or 0
-                
-                if target > 0 and it.count < target and it.isCraftable then
-                    local busy = false
-                    for _, j in pairs(activeJobs) do if j.key == key then busy = true break end end
-
-                    if not busy and currentTime > cooldown then
-                        local ok, itemHandle = pcall(me.findItem, { name = it.name, damage = it.damage or 0 })
-                        if ok and itemHandle then
-                            local needed = target - it.count
-                            local craftOk, handle = pcall(itemHandle.craft, needed)
-                            if craftOk and type(handle) == "table" then
-                                table.insert(activeJobs, {
-                                    handle = handle, key = key, id = os.epoch("utc"), 
-                                    displayName = itemDB[key].label, target = needed, 
-                                    startCount = it.count, progress = 0, startTime = currentTime
-                                })
-                            else
-                                stats.failCooldowns[key] = currentTime + 10
-                            end
-                        end
-                    end
-                end
-            end
         end
     end
 
@@ -118,12 +90,9 @@ while true do
     end
     stats.queueSize = #translationQueue
 
--- =============================================================
+    -- =============================================================
     -- BLOCK 6: JOB MONITORING
     -- =============================================================
-    stats.failCooldowns = stats.failCooldowns or {} 
-    local currentTime = os.epoch("utc") / 1000
-
     for i = #activeJobs, 1, -1 do
         local job = activeJobs[i]
         if not job.expiry then
@@ -154,46 +123,28 @@ while true do
                 
                 if #history > 50 then table.remove(history) end
                 saveTable("job_history.dat", history)
-
-                if actualStatus == "finished" then
-                    table.remove(activeJobs, i)
--- =================================================================
-    -- UPDATED TOTALS & TRANSMISSION (Fixes itemMap nil error)
-    -- =================================================================
-    local totalItemsCount = 0
-    local usedTypesCount = 0
-    
-    -- Calculate totals from our unified DB instead of the old itemMap
-    for _, entry in pairs(itemDB) do
-        if entry.count and entry.count > 0 then
-            totalItemsCount = totalItemsCount + entry.count
-            usedTypesCount = usedTypesCount + 1
+                table.remove(activeJobs, i) -- Job is done/failed, remove it
+            else
+                -- Progress update
+                if successI and itemDB[job.key] then
+                    job.progress = (itemDB[job.key].count or 0) - job.startCount
+                end
+            end
+        elseif currentTime > job.expiry then
+            table.remove(activeJobs, i) -- Clean up expired failed jobs
         end
     end
 
-    -- Send the unified sync package
-    modem.transmit(DATA_CHAN, DATA_CHAN, {
-        type = "SERVER_SYNC", 
-        itemDB = itemDB,
-        activeJobs = activeJobs, 
-        history = history, 
-        stats = stats,
-        cpus = cpuData,
-        totalItems = totalItemsCount,  -- Added back for Dash compatibility
-        usedTypes = usedTypesCount     -- Added back for Dash compatibility
-    })
-
--- =============================================================
+    -- =============================================================
     -- BLOCK 7: AUTOCRAFT LOGIC
     -- =============================================================
-    -- We only run this if we have a fresh rawItems list from AE2
     if stats.managedEnabled and successI then
         for _, it in ipairs(rawItems) do
             local key = it.name .. ":" .. (it.damage or 0)
-            local target = stockRules[key]
+            local target = stockRules[key] or 0
             local cooldown = stats.failCooldowns[key] or 0
             
-            if target and target > 0 and it.count < target and it.isCraftable then
+            if target > 0 and it.count < target and it.isCraftable then
                 local busy = false
                 for _, j in pairs(activeJobs) do 
                     if j.key == key then busy = true break end 
@@ -210,7 +161,7 @@ while true do
                                 handle = handle, 
                                 key = key, 
                                 id = os.epoch("utc"), 
-                                displayName = (type(itemDB[key]) == "table" and itemDB[key].label) or it.label or it.name,
+                                displayName = (itemDB[key] and itemDB[key].label) or it.label or it.name,
                                 target = needed, 
                                 startCount = it.count, 
                                 progress = 0,
@@ -225,10 +176,8 @@ while true do
         end
     end
 
-
-
--- =============================================================
-    -- BLOCK 8: NETWORK & CPUS (Modified to include Storage Totals)
+    -- =============================================================
+    -- BLOCK 8: NETWORK & CPUS
     -- =============================================================
     local cpus = me.getCraftingCPUs()
     local cpuData = { total = #cpus, busy = 0, totalCoPro = 0, maxStorage = 0, avgCoPro = 0 }
@@ -239,12 +188,10 @@ while true do
     end
     if cpuData.total > 0 then cpuData.avgCoPro = cpuData.totalCoPro / cpuData.total end
 
-    
-local totalItemsCount = 0
+    local totalItemsCount = 0
     local usedTypesCount = 0
-    
     for _, entry in pairs(itemDB) do
-        if entry.count > 0 then
+        if entry.count and entry.count > 0 then
             totalItemsCount = totalItemsCount + entry.count
             usedTypesCount = usedTypesCount + 1
         end
@@ -252,11 +199,7 @@ local totalItemsCount = 0
 
     stats.totalItems = totalItemsCount
     stats.usedTypes = usedTypesCount
-    
 
--- =================================================================
-    -- UPDATED BLOCK 8: TRANSMISSION
-    -- =================================================================
     modem.transmit(DATA_CHAN, DATA_CHAN, {
         type = "SERVER_SYNC", 
         itemDB = itemDB,
@@ -276,9 +219,14 @@ local totalItemsCount = 0
             break 
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
             if msg.type == "SET_RULE" then 
-                if msg.target <= 0 then stockRules[msg.name] = nil
-                else stockRules[msg.name] = msg.target end
+                if msg.target <= 0 then 
+                    stockRules[msg.name] = nil
+                else 
+                    stockRules[msg.name] = msg.target 
+                end
                 saveTable("autostock.dat", stockRules)
+                -- Sync the local DB immediately for the next loop
+                if itemDB[msg.name] then itemDB[msg.name].target = msg.target or 0 end
             elseif msg.type == "TOGGLE_MGMT" then 
                 stats.managedEnabled = not stats.managedEnabled 
             elseif msg.type == "CLEAR_HISTORY" then 
