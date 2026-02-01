@@ -59,16 +59,12 @@ local lastStockRefresh = 0
 local cachedLowStock = {} 
 local cachedManagedKeys = {}
 local cachedCraftableList = {}
-local selectedManaged = nil
-local selectedCraftable = nil
 local scrollOffset = 0
 local lastTick = os.epoch("utc")
 local currentTab = 1
 local scrollPos = 1
 local managedScroll = 1
-local selectedJobID = nil
 local stockScroll = 1
-local craftableList = {}
 local uiState = { selectedLeft = nil, selectedRight = nil, stockLevel = 100 }
 local serverData = { items = {}, activeJobs = {}, rules = {}, stats = {completed=0, managedEnabled=true, queueSize=0}, history = {}, itemDB = {} }
 local storageData = { maxBytes = 0, maxTypes = 0, counts = {}, usedBytes = 0, usedTypes = 0 }
