@@ -1,75 +1,73 @@
-🌐 AE2 Network Operations Center (NOC)
+AE2 Network Operations Center (NOC)
 
-A high-performance monitoring suite for Applied Energistics 2, designed for ComputerCraft: Tweaked. This system provides real-time visualization of storage capacity, item usage, and crafting CPU load across a multi-monitor display.
-🏗️ System Architecture
+A high-tech monitoring and management suite for Applied Energistics 2, powered by ComputerCraft (CC: Tweaked). This system provides a centralized dashboard for stock levels, crafting history, storage capacity, and automated item maintenance.
+📂 System Architecture
 
-The system is divided into three specialized nodes to ensure minimal lag and maximum data accuracy:
+The NOC consists of three scripts working in tandem over a wireless network:
+1. NOCDisplay.lua (The Brain)
 
-    Cell Sensor: Attached to a dedicated Storage Subnet to calculate the theoretical maximum capacity of your physical drives.
+    Role: The user interface and controller.
 
-    Main Sensor: Attached to your primary AE2 network to track inventory totals, monitor crafting CPUs, and provide Yellorium fuel data to external systems.
+    Hardware: A Computer with a Wireless Modem and a large Multi-Block Monitor.
 
-    NOC Display: The central hub that aggregates all wireless data into a professional 2x3 monitor dashboard.
+    Function: * Renders a 5-tab graphical interface.
 
-📡 Wireless Channel Map
-Channel	Protocol	Sender	Receiver	Description
-1422	Wireless	Cell Sensor	NOC Display	Physical Storage Cell inventory (for Capacity Math).
-1428	Wireless	Main Sensor	NOC Display	Total item counts and Crafting CPU busy/idle states.
-1425	Wireless	Main Sensor	Power Scripts	External Relay: Live Yellorium Ingot count for fuel monitoring.
-📄 Script Breakdown
-1. CellSensor.lua
+        Handles touch input for adjusting stock levels.
 
-    Connection: Place against an ME Interface. This interface should be part of a subnet that sees your ME Drives via Storage Buses.
+        Processes data from the sensors to calculate real-time storage percentages.
 
-    Function: Scans the available "items" (which are actually your Storage Cells) and transmits them to the NOC. This allows the system to know exactly how many 1k, 4k, 64k, etc., cells are installed.
+2. mainSensor.lua
 
-2. MainSensor.lua
+    Role: Data Aggregator.
 
-    Connection: Place against an ME Interface on your primary network.
+    Hardware: A Computer connected to an AE2 Adapter or Interface.
 
-    Function:
+    Function: * Scans the AE2 network for total item counts, active crafting jobs, and the translation queue.
 
-        Polls the network for total item counts and unique types.
+        Broadcasts network state to the Display on channel 1428.
 
-        Monitors Crafting CPUs to detect system load.
+        Listens for SET_RULE commands from the Display to update auto-stocking targets.
 
-        Fuel Provider: Specifically filters for Yellorium Ingots and broadcasts the count on a dedicated channel (1425) for reactor control scripts.
+3. cellSensor.lua
 
-3. NOCDisplay.lua
+    Role: Storage Auditor.
 
-    Connection: Connected to a 2x3 Advanced Monitor multiblock.
+    Hardware: A Computer connected to an AE2 Drive or Chest.
 
-    Scale: Automatically sets text scale to 0.5 for high-density information.
+    Function: * Identifies the physical storage cells currently inserted (1k, 4k, 64k, etc.).
 
-    UI Features:
+        Sends cell counts and types to the Display on channel 1422.
 
-        Dash Tab: Shows progress bars for storage, a detailed breakdown of detected cell types, and a graphical 8x8 grid representing crafting CPU activity.
+        Allows the UI to calculate "Bytes Usage" vs. "Max Capacity."
 
-        Debug Tab: A diagnostic screen to monitor incoming wireless pulses and verify sensor health.
+🖥️ Dashboard Tabs
+Tab	Name	Description
+1	OVERVIEW	System health, power status, and total item counts.
+2	CRAFTING	Real-time monitoring of active CPU jobs and the translation scheduler.
+3	STOCK	The "Command Center." Add/remove items from auto-stocking and adjust quantities.
+4	HISTORY	A log of recently completed or failed crafting tasks with timestamps.
+5	STORAGE	Visual progress bars for Byte/Type limits and a breakdown of physical drives.
+📡 Networking & Setup
+Channel Configuration
 
-        Auto-Scaling: Automatically converts raw bytes into KB or MB for clean reading.
+    1422: Storage Cell Data (Inbound to Display).
 
-🛠️ In-Game Setup
-Hardware Requirements
+    1428: Network Statistics & History (Inbound to Display).
 
-    3x Advanced Computers (with Wireless Modems).
+    1429: Control Commands (Outbound from Display to Main Sensor).
 
-    6x Advanced Monitors (arranged in a 2-wide, 3-high vertical stack).
+Installation
 
-    2x ME Interfaces.
+    Monitor Setup: Build a monitor (recommended 4x3) and attach a Wireless Modem to the Display computer.
 
-Installation Steps
+    Peripherals: Ensure the mainSensor computer is touching an AE2 Interface/Adapter.
 
-    Storage Subnet: Connect the Cell Sensor to an ME Interface that is looking at your ME Drives through Storage Buses. This ensures it sees the cells, not the items inside them.
+    Drive Specs: If using modded storage cells (e.g., Extra Cells), update the driveSpecs table in the Display script with the appropriate byte capacities.
 
-    Primary Network: Connect the Main Sensor to your main AE2 network.
+🕹️ Controls (Tab 3: Stock Management)
 
-    The NOC: Place the NOC Display computer against your 2x3 monitor wall.
+    Select Item: Tap an item in the "Craftables" list (Right) or "Managed" list (Left).
 
-    Drive Specs: If using modded cells (like ExtraCells), verify the driveSpecs table in NOCDisplay.lua matches your modpack's capacities.
+    Manage/Unmanage: Use << to start managing an item or >> to stop.
 
-🖱️ Touch Controls
-
-    [ 1: DASH ]: Primary overview of your AE2 Network.
-
-    [ 2: DEBUG ]: View "Last Seen" timestamps for all sensors to troubleshoot wireless range issues.
+    Adjust: Tap the green + or red - buttons to increase/decrease stock targets by 1, 10, 100, or 1000.
