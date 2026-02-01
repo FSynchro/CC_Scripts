@@ -305,7 +305,7 @@ buffer.write(tostring(totalEntries))
 -- DEBUG TAB RENDERING (NOCDisplay.lua)
 -- =============================================================
 -- Grab the data from serverData, but default to empty tables if they don't exist yet
-local stats = serverData.stats or { completed = 0, managedEnabled = true, queueSize = 0 }
+local stats = serverData.stats or { completed = 0, queueSize = 0, currentEntry = {} }
 local itemDB = serverData.itemDB or {}
 local cpus = serverData.cpus or {}
 local entry = stats.currentEntry -- This will be nil if no job is running
