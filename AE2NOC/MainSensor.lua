@@ -277,7 +277,7 @@ end
 
 
 -- =============================================================
-    -- BLOCK 8: NETWORK & CPUS (Modified to include Storage Totals)
+    -- BLOCK 8: NETWORK & CPUS
     -- =============================================================
     local cpus = me.getCraftingCPUs()
     local cpuData = { total = #cpus, busy = 0, totalCoPro = 0, maxStorage = 0, avgCoPro = 0 }
@@ -288,11 +288,10 @@ end
     end
     if cpuData.total > 0 then cpuData.avgCoPro = cpuData.totalCoPro / cpuData.total end
 
-    
     local totalItemsCount = 0
     local usedTypesCount = 0
     if successI and rawItems then
-        usedTypesCount = #rawItems -- Each entry in the list is a unique type
+        usedTypesCount = #rawItems
         for _, it in ipairs(rawItems) do
             totalItemsCount = totalItemsCount + it.count
         end
@@ -309,7 +308,7 @@ end
         usedTypes = usedTypesCount
     })
 
--- =============================================================
+    -- =============================================================
     -- BLOCK 9: EVENT LISTENER
     -- =============================================================
     local pulseTimer = os.startTimer(2.0)
@@ -317,24 +316,21 @@ end
         local event, side, chan, replyChan, msg = os.pullEvent()
         
         if event == "timer" and side == pulseTimer then 
-            break -- Time to refresh the main loop
+            break -- Breaks Block 9 loop to refresh Block 4
             
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
-            -- All remote commands go inside this section
-if msg.type == "SET_RULE" then 
-    if itemDB[msg.name] then
-        itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
-        saveTable("item_db.dat", itemDB) -- One file, one truth.
-        print("Updated Target for " .. msg.name .. " to " .. itemDB[msg.name].target)
-    end
+            if msg.type == "SET_RULE" then 
+                if itemDB[msg.name] then
+                    itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
+                    saveTable("item_db.dat", itemDB)
+                    print("Updated Target: " .. msg.name)
+                end
             elseif msg.type == "TOGGLE_MGMT" then 
                 stats.managedEnabled = not stats.managedEnabled
             elseif msg.type == "CLEAR_HISTORY" then 
                 history = {}
                 saveTable("job_history.dat", history) 
             end
-            -- End of message type checks
         end 
-    end
-end
-end
+    end -- End of Block 9 While
+end -- End of Block 4 While
