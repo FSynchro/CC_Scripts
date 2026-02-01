@@ -6,6 +6,12 @@ local mon = peripheral.find("monitor") or term
 local modem = peripheral.find("modem", function(_, p) return p.isWireless() end) 
     or error("No Wireless Modem Found")
 
+local debugLog = {
+    [1422] = {lastSeen = "Never", status = "Waiting"},
+    [1428] = {lastSeen = "Never", status = "Waiting"},
+    [1429] = {lastSeen = "Never", status = "Waiting"}
+}
+
 mon.setTextScale(0.5)
 local w, h = mon.getSize()
 local buffer = window.create(mon, 1, 1, w, h, true)
