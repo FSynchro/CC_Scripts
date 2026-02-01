@@ -109,11 +109,10 @@ while true do
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
             
-            -- Set target if it's a brand new item from stockRules
-            if itemDB[key].target == nil then
-                itemDB[key].target = stockRules[key] or 0
-            end
-            
+            -- Update live data
+            itemDB[key].count = it.count
+            itemDB[key].isCraftable = it.isCraftable
+        end
             -- (The Autocraft Logic below this stays the same...)
 
             -- Autocraft Logic
@@ -322,11 +321,12 @@ end
             
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
             -- All remote commands go inside this section
-            if msg.type == "SET_RULE" then 
-                if itemDB[msg.name] then
-                    itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
-                    saveTable("item_db.dat", itemDB) 
-                end
+if msg.type == "SET_RULE" then 
+    if itemDB[msg.name] then
+        itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
+        saveTable("item_db.dat", itemDB) -- One file, one truth.
+        print("Updated Target for " .. msg.name .. " to " .. itemDB[msg.name].target)
+    end
             elseif msg.type == "TOGGLE_MGMT" then 
                 stats.managedEnabled = not stats.managedEnabled
             elseif msg.type == "CLEAR_HISTORY" then 
