@@ -29,7 +29,6 @@ end
 -- BLOCK 3: STATE VARIABLES
 -- =================================================================
 local currentTranslation = nil
-local stockRules = loadTable("autostock.dat")
 local history = loadTable("job_history.dat")
 local itemDB = loadTable("item_db.dat")
 local activeJobs = {} 
@@ -83,9 +82,14 @@ while true do
         for _, it in ipairs(rawItems) do
             local key = it.name .. ":" .. (it.damage or 0)
             
-            if not itemDB[key] then
-                itemDB[key] = { label = "Awaiting Meta...", target = 0 }
-            end
+if not itemDB[key] then
+        itemDB[key] = { 
+            label = "Awaiting Meta...", 
+            target = 0, 
+            count = 0, 
+            isCraftable = false 
+        }
+    end
 
             if itemDB[key].label == "Awaiting Meta..." and not queueLookup[key] then
                 table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
