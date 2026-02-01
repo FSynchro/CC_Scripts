@@ -37,7 +37,13 @@ local history = loadTable("job_history.dat")
 local itemDB = loadTable("item_db.dat")
 local activeJobs = {} 
 local translationQueue = {}
-local stats = { completed = 0, failed = 0, managedEnabled = true, queueSize = 0 }
+local stats = { 
+    completed = 0, 
+    failed = 0, 
+    managedEnabled = true, 
+    queueSize = 0,
+    failCooldowns = {}
+}
 
 print("Server v27.0 Online - Precision Mode")
 
@@ -57,14 +63,18 @@ while true do
             
             -- Initialize item in DB if it's new
             if not itemDB[key] then
-                itemDB[key] = { label = it.label or "Awaiting Meta..." }
-                table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
+                 itemDB[key] = { label = it.label or "Awaiting Meta..." }
+                 table.insert(translationQueue, {name = it.name, damage = it.damage or 0, key = key})
             end
 
             -- Update itemDB state
             itemDB[key].count = it.count
             itemDB[key].isCraftable = it.isCraftable
-            itemDB[key].target = stockRules[key] or 0
+            -- Only use stockRules if target isn't already set in itemDB
+            -- Migration: If itemDB doesn't have a target yet, pull from old stockRules
+              if itemDB[key].target == nil then
+                  itemDB[key].target = stockRules[key] or 0
+              end
             itemDB[key].managed = (itemDB[key].target > 0)
 
             -- Autocraft Logic
@@ -154,8 +164,8 @@ while true do
             else
                 -- Progress update logic
                 -- Note: itemMap is only available if successI was true
-                if successI then
-                    job.progress = (itemMap[job.key] or 0) - job.startCount
+                if successI and itemDB[job.key] then
+                 job.progress = itemDB[job.key].count - job.startCount
                 end
                 job.rawStatus = "running"
             end
@@ -171,46 +181,51 @@ while true do
 
 
 -- =============================================================
-    -- BLOCK 7: AUTOCRAFT LOGIC
-    -- =============================================================
-    -- We only run this if we have a fresh rawItems list from AE2
-    if stats.managedEnabled and successI then
-        for _, it in ipairs(rawItems) do
-            local key = it.name .. ":" .. (it.damage or 0)
-            local target = stockRules[key]
-            local cooldown = stats.failCooldowns[key] or 0
+-- BLOCK 7: AUTOCRAFT LOGIC (Centralized)
+-- =============================================================
+if stats.managedEnabled and successI then
+    for key, it in pairs(itemDB) do
+        local target = it.target or 0
+        local cooldown = stats.failCooldowns[key] or 0
+        
+        -- Logic: Must have a target AND be below it AND be craftable
+        if target > 0 and it.count < target and it.isCraftable then
             
-            if target and target > 0 and it.count < target and it.isCraftable then
-                local busy = false
-                for _, j in pairs(activeJobs) do 
-                    if j.key == key then busy = true break end 
-                end
+            -- Check if we are already working on this
+            local busy = false
+            for _, j in pairs(activeJobs) do 
+                if j.key == key then busy = true break end 
+            end
 
-                if not busy and currentTime > cooldown then
-                    local ok, itemHandle = pcall(me.findItem, { name = it.name, damage = it.damage or 0 })
-                    if ok and itemHandle then
-                        local needed = target - it.count
-                        local craftOk, handle = pcall(itemHandle.craft, needed)
-                        
-                        if craftOk and type(handle) == "table" then
-                            table.insert(activeJobs, {
-                                handle = handle, 
-                                key = key, 
-                                id = os.epoch("utc"), 
-                                displayName = (type(itemDB[key]) == "table" and itemDB[key].label) or it.label or it.name,
-                                target = needed, 
-                                startCount = it.count, 
-                                progress = 0,
-                                startTime = currentTime
-                            })
-                        else
-                            stats.failCooldowns[key] = currentTime + 10
-                        end
+            if not busy and currentTime > cooldown then
+                -- Reconstruct AE2 search table from our key
+                local name, damage = key:match("([^:]+):([^:]+)")
+                local ok, itemHandle = pcall(me.findItem, { name = name, damage = tonumber(damage) })
+                
+                if ok and itemHandle then
+                    local needed = target - it.count
+                    local craftOk, handle = pcall(itemHandle.craft, needed)
+                    
+                    if craftOk and type(handle) == "table" then
+                        table.insert(activeJobs, {
+                            handle = handle, 
+                            key = key, 
+                            id = os.epoch("utc"), 
+                            displayName = it.label or name,
+                            target = needed, 
+                            startCount = it.count, 
+                            progress = 0,
+                            startTime = currentTime
+                        })
+                    else
+                        -- If AE2 fails to start the job (e.g., no CPUs), cool down for 10s
+                        stats.failCooldowns[key] = currentTime + 10
                     end
                 end
             end
         end
     end
+end
 
 
 
@@ -257,11 +272,14 @@ while true do
             break 
         elseif event == "modem_message" and chan == ORDER_CHAN and type(msg) == "table" then
             if msg.type == "SET_RULE" then 
-                if msg.target <= 0 then stockRules[msg.name] = nil
-                else stockRules[msg.name] = msg.target end
-                saveTable("autostock.dat", stockRules)
-            elseif msg.type == "TOGGLE_MGMT" then 
-                stats.managedEnabled = not stats.managedEnabled 
+                if itemDB[msg.name] then
+                    -- Force target to be a number and at least 0
+                    itemDB[msg.name].target = math.max(0, tonumber(msg.target) or 0)
+                    saveTable("item_db.dat", itemDB) 
+                end
+        elseif msg.type == "TOGGLE_MGMT" then 
+             -- This is the "Master Kill Switch" for the whole server
+                stats.managedEnabled = not stats.managedEnabled
             elseif msg.type == "CLEAR_HISTORY" then 
                 history = {}
                 saveTable("job_history.dat", history) 
