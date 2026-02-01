@@ -328,7 +328,7 @@ local function refreshUI()
         end
 
 -- Translation Scheduler Display
-drawBox(2, 28, 9, 14, "TRANSLATION SCHEDULER", colors.purple)
+drawBox(2, 28, 9, 15, "TRANSLATION SCHEDULER", colors.purple)
 buffer.setCursorPos(4, 10)
 buffer.setTextColor(colors.yellow)
 buffer.write("Queue Size: " .. (serverData.stats.queueSize or 0))
@@ -351,13 +351,22 @@ else
     buffer.write("Status: IDLE")
 end
         
-        local statusCol = colors.gray
-        if wStat == "Complete" then statusCol = colors.lime 
-        elseif wStat == "In Progress" then statusCol = colors.yellow
-        elseif wStat == "Failed" then statusCol = colors.red end
-        
-        buffer.setTextColor(statusCol)
-        buffer.write("["..wStat.."]")
+-- Determine status based on whether an entry exists
+    local statusText = "IDLE"
+    local statusCol = colors.gray
+    
+    if serverData.stats.currentEntry then
+        statusText = "RUNNING"
+        statusCol = colors.yellow
+    elseif (serverData.stats.queueSize or 0) > 0 then
+        statusText = "WAITING"
+        statusCol = colors.cyan
+    end
+
+    -- Draw the status tag
+buffer.setCursorPos(4, 14) 
+buffer.setTextColor(statusCol)
+buffer.write("[" .. statusText .. "]")
 
 -- =================================================================
 -- TAB 3: STOCK MANAGEMENT (Updated for new itemDB)
