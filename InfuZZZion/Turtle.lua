@@ -28,7 +28,59 @@ local function getPosition()
     return {x = x, y = y, z = z}
 end
 
+
+--- Fuel configuration and logic
+
+local MIN_FUEL = 200
+local REFUEL_THRESHOLD = 50
+local COAL_COUNT = 16
+
+local function checkFuel(meInterfacePosition)
+    -- 1. Try to refuel from internal inventory first
+    if turtle.getFuelLevel() < MIN_FUEL then
+        for i = 1, 16 do
+            turtle.select(i)
+            if turtle.refuel(0) then -- Checks if item is fuel
+                turtle.refuel()
+                print("Refueled! Current level: " .. turtle.getFuelLevel())
+            end
+        end
+    end
+
+    -- 2. If still critically low, override and go to ME Interface
+    if turtle.getFuelLevel() < REFUEL_THRESHOLD then
+        if meInterfacePosition then
+            print("CRITICAL FUEL: Going to ME Interface for coal...")
+            
+            -- Move above ME Interface
+            local target = {
+                x = meInterfacePosition.x, 
+                y = meInterfacePosition.y + 1, 
+                z = meInterfacePosition.z
+            }
+            
+            -- We call moveTo but we must bypass the fuel check inside it to avoid a loop
+            -- For simplicity, we move manually or use a flag
+            if moveTo(target, true) then 
+                turtle.suckDown(COAL_COUNT)
+                turtle.refuel()
+                print("Emergency refuel complete.")
+                return true
+            end
+        else
+            print("CRITICAL FUEL: No ME Interface known!")
+        end
+    end
+    return turtle.getFuelLevel() > REFUEL_THRESHOLD
+end
+
 local function moveTo(target)
+
+    if not bypassFuel and not checkFuel(meInterfacePosition) then
+        print("STALLED: Waiting for fuel...")
+        return false
+    end
+    
     local current = getPosition()
     if not current then return false end
 
