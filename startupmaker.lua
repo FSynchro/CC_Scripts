@@ -35,20 +35,17 @@ end
 
 local function getScripts(dir, fileList)
     fileList = fileList or {}
-    -- Add the Virtual GPS Entry at the top
-    table.insert(fileList, "GPS Automanage")
-    
     if not fs.exists(dir) or not fs.isDir(dir) then return fileList end
+    
     local list = fs.list(dir)
     for _, file in ipairs(list) do
         local path = fs.combine(dir, file)
         if fs.isDir(path) then
-            getScripts(path, fileList)
+            getScripts(path, fileList) -- Recurse without adding GPS again
         elseif file:sub(-4) == ".lua" and file ~= "startupmaker.lua" and file ~= "startup.lua" then
             table.insert(fileList, path)
         end
     end
-    -- We don't sort here anymore so GPS stays at the top, or sort then re-insert.
     return fileList
 end
 
@@ -82,6 +79,9 @@ end
 
 -- MAIN LOGIC
 local scripts = getScripts(rootDir)
+table.sort(scripts)
+table.insert(scripts, 1, "GPS Automanage")
+
 local selected = 1
 
 while true do
