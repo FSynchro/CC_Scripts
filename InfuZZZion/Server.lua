@@ -79,9 +79,44 @@ scanComplete = true
 
 -- Deduct energy (can go negative)
 scannerEnergy = scannerEnergy - SCAN_COST
-print("Scan complete! Energy now: " .. scannerEnergy)
+-- Count discovered blocks
+local manaBlocks = 0
+local pedestals = 0
+local meInterfaces = 0
+local chests = 0
+
+for _, block in ipairs(blocks) do
+    -- Mana infused metal (Thermal Foundation storage block, meta 8)
+    if block.name == "thermalfoundation:storage" and block.metadata == 8 then
+        manaBlocks = manaBlocks + 1
+    end
+
+    -- Thaumcraft pedestals (adjust name if your modpack uses a variant)
+    if block.name and block.name:find("pedestal") then
+        pedestals = pedestals + 1
+    end
+
+    -- ME Interface
+    if block.name and block.name:find("interface") then
+        meInterfaces = meInterfaces + 1
+    end
+
+    -- Chests
+    if block.name and block.name:find("chest") then
+        chests = chests + 1
+    end
+end
+
+print(
+    "Scan complete! Energy now: " .. scannerEnergy ..
+    " | Found " .. manaBlocks .. " mana blocks, " ..
+    pedestals .. " pedestals, " ..
+    meInterfaces .. " ME interfaces, " ..
+    chests .. " chests"
+)
 
 print("Waiting for energy recovery...")
+
 
 -- Recover until at least MIN_ENERGY_AFTER_SCAN
 while scannerEnergy < MIN_ENERGY_AFTER_SCAN do
