@@ -420,21 +420,22 @@ end
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
     for _, recipe in ipairs(recipes) do
+
         -- Check catalyst match
         if not itemsMatch(catalyst.item, recipe.catalyst.item, true, true) then
             goto continue
         end
-        
+
         if catalyst.matchNBT ~= recipe.catalyst.matchNBT or 
            catalyst.matchDMG ~= recipe.catalyst.matchDMG then
             goto continue
         end
-        
+
         -- Check ingredient count
         if #ingredients ~= #recipe.ingredients then
             goto continue
         end
-        
+
         -- Check all ingredients match (order doesn't matter)
         local allMatch = true
         for _, ing1 in ipairs(ingredients) do
@@ -452,16 +453,17 @@ local function recipeExists(catalyst, ingredients)
                 break
             end
         end
-        
+
         if allMatch then
             return true
         end
-        
+
         ::continue::
     end
-    
+
     return false
 end
+
 
 -- Add recipe
 local function addRecipe(catalyst, ingredients, senderId)
