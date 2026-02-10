@@ -507,6 +507,7 @@ local function handleMessage(msg, sender)
             })
     end
     end
+end
 
 -- Main loop
 local function main()
