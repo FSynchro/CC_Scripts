@@ -178,21 +178,20 @@ end
 
 -- Check if chest contents match a recipe
 local function findMatchingRecipe()
-    if not inputChest then return nil end
+if not inputChest then return nil end
     
     local items = inputChest.list()
     if not items then return nil end
     
-    -- Convert to item list
     local chestItems = {}
     for slot, item in pairs(items) do
-        local detail = inputChest.getItemDetail(slot)
+        -- Use the data directly from .list() instead of calling getItemDetail
         table.insert(chestItems, {
             slot = slot,
-            name = detail.name,
-            count = detail.count,
-            damage = detail.damage or 0,
-            nbt = detail.nbt or ""
+            name = item.name,
+            count = item.count,
+            damage = item.damage or 0,
+            nbt = "" -- We can't see NBT in this version without specialized blocks
         })
     end
     
@@ -492,23 +491,21 @@ local function handleMessage(msg, sender)
             local itemList = {}
             
             for slot, item in pairs(items) do
-                local detail = inputChest.getItemDetail(slot)
+                -- Removing the getItemDetail call
                 table.insert(itemList, {
                     slot = slot,
-                    name = detail.name,
-                    displayName = detail.displayName,
-                    count = detail.count,
-                    damage = detail.damage or 0,
-                    nbt = detail.nbt or ""
+                    name = item.name,
+                    displayName = item.name, -- Fallback since displayName isn't in .list()
+                    count = item.count,
+                    damage = item.damage or 0,
+                    nbt = "" 
                 })
             end
             
             broadcast("chest_contents", {
                 items = itemList
             })
-        end
     end
-end
 
 -- Main loop
 local function main()
