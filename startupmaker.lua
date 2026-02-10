@@ -8,7 +8,6 @@ local function center(text)
     print(text)
 end
 
--- 1. UPDATED FSYNC HEADER
 local function drawHeader()
     term.setBackgroundColor(colors.black)
     term.clear()
@@ -34,9 +33,11 @@ local function drawHeader()
     print("---------------------------------------------------")
 end
 
--- 2. RECURSIVE FILE FINDER
 local function getScripts(dir, fileList)
     fileList = fileList or {}
+    -- Add the Virtual GPS Entry at the top
+    table.insert(fileList, "GPS Automanage")
+    
     if not fs.exists(dir) or not fs.isDir(dir) then return fileList end
     local list = fs.list(dir)
     for _, file in ipairs(list) do
@@ -47,18 +48,15 @@ local function getScripts(dir, fileList)
             table.insert(fileList, path)
         end
     end
-    table.sort(fileList)
+    -- We don't sort here anymore so GPS stays at the top, or sort then re-insert.
     return fileList
 end
 
--- 3. UI RENDERER
 local function drawMenu(scripts, selected)
     drawHeader()
-    
     local w, h = term.getSize()
     
     for i, path in ipairs(scripts) do
-        -- Scissor the list so it doesn't run off the bottom of the screen
         if i >= selected - 3 and i <= selected + 3 then
             if i == selected then
                 term.setBackgroundColor(colors.lightGray)
@@ -74,7 +72,6 @@ local function drawMenu(scripts, selected)
         end
     end
     
-    -- Footer
     term.setCursorPos(1, h)
     term.setBackgroundColor(colors.gray)
     term.setTextColor(colors.white)
@@ -83,16 +80,10 @@ local function drawMenu(scripts, selected)
     term.setBackgroundColor(colors.black)
 end
 
--- 4. MAIN LOGIC
+-- MAIN LOGIC
 local scripts = getScripts(rootDir)
-if #scripts == 0 then
-    drawHeader()
-    term.setTextColor(colors.red)
-    center("Error: No scripts found in "..rootDir)
-    return
-end
-
 local selected = 1
+
 while true do
     drawMenu(scripts, selected)
     local event, key = os.pullEvent("key")
@@ -107,26 +98,37 @@ while true do
         break
     elseif key == keys.enter then
         local target = scripts[selected]
-        
-        -- WRITING THE NEW AUTO-UPDATING STARTUP SCRIPT
         local f = fs.open("startup.lua", "w")
-        f.writeLine("-- FSYNC AUTO-UPDATING BOOT")
-        f.writeLine("print('Checking for updates...')")
         
-        -- Delete the old folder to ensure a clean clone
-        f.writeLine("if fs.exists('" .. rootDir .. "') then fs.delete('" .. rootDir .. "') end")
-        
-        -- Clone the repo (Assumes clone.min is already on the computer)
-        f.writeLine("shell.run('clone.min https://github.com/FSynchro/CC_Scripts')")
-        
-        -- Run the selected script
-        f.writeLine("if fs.exists('" .. target .. "') then")
-        f.writeLine("  shell.run('" .. target .. "')")
-        f.writeLine("else")
-        f.writeLine("  print('Error: Target script not found after update.')")
-        f.writeLine("  print('Path: " .. target .. "')")
-        f.writeLine("end")
-        f.close()
+        if target == "GPS Automanage" then
+            -- GPS LOGIC
+            term.clear()
+            term.setCursorPos(1,1)
+            print("Locating GPS satellites...")
+            
+            -- Try to find position
+            local x, y, z = gps.locate(2)
+            x = x or "x"
+            y = y or "y"
+            z = z or "z"
+            
+            f.writeLine("-- GPS AUTOMANAGE STARTUP")
+            f.writeLine(string.format("shell.run('gps', 'host', '%s', '%s', '%s')", tostring(x), tostring(y), tostring(z)))
+            f.close()
+        else
+            -- ORIGINAL FSYNC LOGIC
+            f.writeLine("-- FSYNC AUTO-UPDATING BOOT")
+            f.writeLine("print('Checking for updates...')")
+            f.writeLine("if fs.exists('" .. rootDir .. "') then fs.delete('" .. rootDir .. "') end")
+            f.writeLine("shell.run('clone.min https://github.com/FSynchro/CC_Scripts')")
+            f.writeLine("if fs.exists('" .. target .. "') then")
+            f.writeLine("  shell.run('" .. target .. "')")
+            f.writeLine("else")
+            f.writeLine("  print('Error: Target script not found after update.')")
+            f.writeLine("  print('Path: " .. target .. "')")
+            f.writeLine("end")
+            f.close()
+        end
         
         -- UI Confirmation
         local w, h = term.getSize()
@@ -134,8 +136,8 @@ while true do
         term.clear()
         term.setCursorPos(1, math.floor(h/2))
         term.setTextColor(colors.white)
-        center("FSYNC: AUTO-UPDATE ENABLED")
-        center("Script: " .. fs.getName(target))
+        center("BOOT CONFIGURATION SAVED")
+        center("Target: " .. target)
         center("Rebooting computer...")
         sleep(1.5)
         os.reboot()
