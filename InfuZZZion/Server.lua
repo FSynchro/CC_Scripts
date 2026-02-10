@@ -70,33 +70,14 @@ local function scanForPeripherals()
         return false
     end
     
--- Wait until scanner has enough simulated energy
 print("Scanner energy: " .. scannerEnergy)
-
-if scannerEnergy < MIN_ENERGY_TO_SCAN then
-    print("Scanner needs at least " .. MIN_ENERGY_TO_SCAN .. " energy to scan")
-    print("Recharging at " .. ENERGY_REGEN .. " energy per second...")
-
-    while scannerEnergy < MIN_ENERGY_TO_SCAN do
-        sleep(1)
-        scannerEnergy = scannerEnergy + ENERGY_REGEN
-
-        -- Cap energy at max capacity
-        if scannerEnergy > ENERGY_CAPACITY then
-            scannerEnergy = ENERGY_CAPACITY
-        end
-
-        print("Energy: " .. scannerEnergy .. " / " .. MIN_ENERGY_TO_SCAN)
-    end
-end
-
 print("Scanning for blocks (costs " .. SCAN_COST .. " energy)...")
 
--- Perform scan
+-- Perform scan immediately
 local blocks = scanner.scan()
 scanComplete = true
 
--- Deduct energy
+-- Deduct energy (can go negative)
 scannerEnergy = scannerEnergy - SCAN_COST
 print("Scan complete! Energy now: " .. scannerEnergy)
 
@@ -107,7 +88,7 @@ while scannerEnergy < MIN_ENERGY_AFTER_SCAN do
     sleep(1)
     scannerEnergy = scannerEnergy + ENERGY_REGEN
 
-    -- Cap energy at max capacity
+    -- Cap at max capacity
     if scannerEnergy > ENERGY_CAPACITY then
         scannerEnergy = ENERGY_CAPACITY
     end
@@ -116,6 +97,7 @@ while scannerEnergy < MIN_ENERGY_AFTER_SCAN do
 end
 
 print("Energy recovered! Processing scan results...")
+
 
     
     local chestFound = false
