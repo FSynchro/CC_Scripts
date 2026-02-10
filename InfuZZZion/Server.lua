@@ -11,6 +11,8 @@ local turtles = {}
 local gloveTurtle = nil
 local altars = {}
 local inputChest = nil
+local chestPosition = nil
+local meInterfacePosition = nil
 local currentRecipe = nil
 local errorMode = false
 local errorMessage = ""
@@ -31,6 +33,11 @@ local function findPeripherals()
     if not inputChest or not inputChest.list then
         table.insert(errors, "Input chest not found on RIGHT side")
     end
+    
+    -- Calculate chest position (we need GPS coordinates)
+    -- The server computer needs to know its own position to calculate chest position
+    print("Server needs GPS position to calculate chest/ME Interface locations")
+    print("Requesting position from turtles...")
     
     -- ME Interface is on the opposite side of the chest
     -- We don't need to wrap it - turtles will interact with it directly
@@ -243,6 +250,11 @@ end
 local function startInfusion(recipeId, recipe, altar)
     print("Starting infusion for recipe #" .. recipeId .. " on altar #" .. altar)
     
+    if not chestPosition or not meInterfacePosition then
+        print("ERROR: Chest/ME Interface positions not known yet!")
+        return
+    end
+    
     altar.busy = true
     altar.currentRecipe = recipeId
     
@@ -261,7 +273,8 @@ local function startInfusion(recipeId, recipe, altar)
         table.insert(catalystTurtle.tasks, {
             type = "place_catalyst",
             item = recipe.catalyst,
-            position = altars[altar].catalyst
+            position = altars[altar].catalyst,
+            chestPosition = chestPosition
         })
         catalystTurtle.status = "working"
     end
@@ -277,7 +290,8 @@ local function startInfusion(recipeId, recipe, altar)
             table.insert(turtle.tasks, {
                 type = "place_ingredient",
                 item = ingredient,
-                position = altars[altar].pedestals[pedestalIdx]
+                position = altars[altar].pedestals[pedestalIdx],
+                chestPosition = chestPosition
             })
             turtle.status = "working"
             
@@ -296,7 +310,8 @@ local function startInfusion(recipeId, recipe, altar)
                 table.insert(catalystTurtle.tasks, {
                     type = "place_ingredient",
                     item = recipe.ingredients[i],
-                    position = altars[altar].pedestals[pedestalIdx]
+                    position = altars[altar].pedestals[pedestalIdx],
+                    chestPosition = chestPosition
                 })
             end
         end
@@ -383,7 +398,8 @@ local function completeInfusion(altarIdx)
     if catalystTurtle then
         table.insert(catalystTurtle.tasks, {
             type = "retrieve_result",
-            position = altars[altarIdx].catalyst
+            position = altars[altarIdx].catalyst,
+            meInterfacePosition = meInterfacePosition
         })
         catalystTurtle.status = "working"
         
@@ -414,6 +430,20 @@ local function handleMessage(msg, sender)
     
     if msg.type == "turtle_register" then
         registerTurtle(sender, msg.data.position, msg.data.isGloveTurtle or false)
+        
+        -- Request this turtle to find chest and ME Interface positions if we don't have them
+        if not chestPosition or not meInterfacePosition then
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "find_chest_positions",
+                data = {}
+            })
+        end
+        
+    elseif msg.type == "chest_positions_found" then
+        chestPosition = msg.data.chestPosition
+        meInterfacePosition = msg.data.meInterfacePosition
+        print("Chest position: " .. textutils.serialize(chestPosition))
+        print("ME Interface position: " .. textutils.serialize(meInterfacePosition))
         
     elseif msg.type == "altar_found" then
         registerAltar(msg.data.catalystPos, msg.data.pedestalPositions)
