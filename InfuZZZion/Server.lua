@@ -265,55 +265,6 @@ local function retryPendingMessages()
     end
 end
 
--- Handle turtle registration
-local function registerTurtle(computerId, position, isGloveTurtle)
-    local turtleId = nextTurtleId
-    nextTurtleId = nextTurtleId + 1
-    
-    if isGloveTurtle then
-        gloveTurtle = {
-            id = turtleId,
-            computerId = computerId,
-            position = position,
-            status = "idle",
-            statusDetail = "waiting",
-            tasks = {}
-        }
-        print("Registered glove turtle: #" .. turtleId .. " (Computer " .. computerId .. ")")
-    else
-        table.insert(turtles, {
-            id = turtleId,
-            computerId = computerId,
-            position = position,
-            status = "idle",
-            statusDetail = "waiting",
-            tasks = {}
-        })
-        print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
-    end
-    
-    -- Send assigned ID back to turtle
-    modem.transmit(CHANNEL, CHANNEL, {
-        type = "turtle_id_assigned",
-        data = {
-            computerId = computerId,
-            assignedId = turtleId,
-            chestPosition = chestPosition,
-            meInterfacePosition = meInterfacePosition
-        }
-    })
-    
-    broadcast("turtle_registered", {
-        turtleId = turtleId,
-        totalTurtles = #turtles
-    })
-    
-    -- If we have turtles and potential altar blocks, start setup cycle
-    if #turtles > 0 and #potentialAltarBlocks > 0 and not setupComplete then
-        startSetupCycle()
-    end
-end
-
 -- Start setup cycle - send turtles to verify altar block positions
 local function startSetupCycle()
     if setupComplete then return end
@@ -416,6 +367,56 @@ local function registerAltar(catalystPos, pedestalPositions, reportedBy)
         totalAltars = #altars
     })
 end
+
+-- Handle turtle registration
+local function registerTurtle(computerId, position, isGloveTurtle)
+    local turtleId = nextTurtleId
+    nextTurtleId = nextTurtleId + 1
+    
+    if isGloveTurtle then
+        gloveTurtle = {
+            id = turtleId,
+            computerId = computerId,
+            position = position,
+            status = "idle",
+            statusDetail = "waiting",
+            tasks = {}
+        }
+        print("Registered glove turtle: #" .. turtleId .. " (Computer " .. computerId .. ")")
+    else
+        table.insert(turtles, {
+            id = turtleId,
+            computerId = computerId,
+            position = position,
+            status = "idle",
+            statusDetail = "waiting",
+            tasks = {}
+        })
+        print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+    end
+    
+    -- Send assigned ID back to turtle
+    modem.transmit(CHANNEL, CHANNEL, {
+        type = "turtle_id_assigned",
+        data = {
+            computerId = computerId,
+            assignedId = turtleId,
+            chestPosition = chestPosition,
+            meInterfacePosition = meInterfacePosition
+        }
+    })
+    
+    broadcast("turtle_registered", {
+        turtleId = turtleId,
+        totalTurtles = #turtles
+    })
+    
+    -- If we have turtles and potential altar blocks, start setup cycle
+    if #turtles > 0 and #potentialAltarBlocks > 0 and not setupComplete then
+        startSetupCycle()
+    end
+end
+
 
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
