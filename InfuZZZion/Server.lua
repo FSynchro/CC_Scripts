@@ -73,6 +73,36 @@ local function loadDatabase()
     end
 end
 
+-- Discovering the altar using Plethora Scanner
+local function scanForAltar()
+    local scanner = peripheral.wrap("left")
+    if not scanner or not scanner.scan then
+        print("No Scanner Module found in Manipulator!")
+        return nil
+    end
+
+    print("Scanning for Runic Matrix or Pedestals...")
+    local blocks = scanner.scan()
+    
+    local catalystPos = nil
+    local pedestals = {}
+
+    for _, block in ipairs(blocks) do
+        -- Replace with actual Thaumcraft block IDs
+        if block.name == "Thaumcraft:blockPedestal" then
+            -- Check if this is likely the center (Y level logic)
+            -- Usually, the Matrix is at Y+2 and Catalyst at Y+0
+            if isCentralPedestal(block, blocks) then
+                catalystPos = {x = block.x, y = block.y, z = block.z}
+            else
+                table.insert(pedestals, {x = block.x, y = block.y, z = block.z})
+            end
+        end
+    end
+
+    return catalystPos, pedestals
+end
+
 -- Compare items with NBT/DMG matching
 local function itemsMatch(item1, item2, matchNBT, matchDMG)
     if item1.name ~= item2.name then
