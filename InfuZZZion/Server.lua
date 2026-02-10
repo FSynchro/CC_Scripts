@@ -19,6 +19,8 @@ local errorMode = false
 local errorMessage = ""
 local nextTurtleId = 1
 local pendingMessages = {} -- For ACK/NACK system
+local setupComplete = false
+local potentialAltarBlocks = {} -- Relative positions of mana infused steel blocks
 
 -- Modem setup
 local modem = peripheral.find("modem")
@@ -77,12 +79,12 @@ local function scanForPeripherals()
         end
     end
     
-    print("Scanning for chest and ME Interface (costs 1700 energy)...")
+    print("Scanning for blocks (costs 1700 energy)...")
     local blocks = scanner.scan()
     scanComplete = true
     
-    print("Scan complete! Waiting for energy recovery...")
-    print("Scanner will be at negative energy (-1600), waiting for recovery...")
+    print("Scan complete! Found " .. #blocks .. " blocks")
+    print("Waiting for energy recovery...")
     
     -- Wait for energy to recover above 0
     scannerEnergy = scanner.getEnergy and scanner.getEnergy() or -1600
@@ -100,7 +102,9 @@ local function scanForPeripherals()
     
     local chestFound = false
     local meFound = false
+    local altarBlockCount = 0
     
+    -- Filter blocks
     for _, block in ipairs(blocks) do
         -- Look for chest (should be at relative position right of server)
         if block.name and block.name:find("chest") and block.x == 1 and block.y == 0 and block.z == 0 then
@@ -113,7 +117,7 @@ local function scanForPeripherals()
             print("Found chest at: " .. textutils.serialize(chestPosition))
         end
         
-        -- Look for ME Interface (should be opposite side of chest)
+        -- Look for ME Interface
         if block.name and block.name:find("interface") then
             meInterfacePosition = {
                 x = serverPosition.x + block.x,
@@ -123,7 +127,20 @@ local function scanForPeripherals()
             meFound = true
             print("Found ME Interface at: " .. textutils.serialize(meInterfacePosition))
         end
+        
+        -- Look for mana infused steel blocks (thermalfoundation:storage damage 8)
+        if block.name == "thermalfoundation:storage" and block.metadata == 8 then
+            -- Store relative position
+            table.insert(potentialAltarBlocks, {
+                x = block.x,
+                y = block.y,
+                z = block.z
+            })
+            altarBlockCount = altarBlockCount + 1
+        end
     end
+    
+    print("Found " .. altarBlockCount .. " potential altar blocks (mana infused steel)")
     
     if not chestFound then
         print("ERROR: Chest not found! Make sure it's on the RIGHT side of server.")
@@ -289,6 +306,73 @@ local function registerTurtle(computerId, position, isGloveTurtle)
     broadcast("turtle_registered", {
         turtleId = turtleId,
         totalTurtles = #turtles
+    })
+    
+    -- If we have turtles and potential altar blocks, start setup cycle
+    if #turtles > 0 and #potentialAltarBlocks > 0 and not setupComplete then
+        startSetupCycle()
+    end
+end
+
+-- Start setup cycle - send turtles to verify altar block positions
+local function startSetupCycle()
+    if setupComplete then return end
+    
+    print("")
+    print("=================================")
+    print("Starting Setup Cycle")
+    print("=================================")
+    print("Potential altar blocks: " .. #potentialAltarBlocks)
+    print("Available turtles: " .. #turtles)
+    
+    -- Distribute altar blocks to turtles
+    local blocksPerTurtle = math.ceil(#potentialAltarBlocks / #turtles)
+    local blockIdx = 1
+    
+    for turtleIdx, turtle in ipairs(turtles) do
+        local blocksToCheck = {}
+        
+        for i = 1, blocksPerTurtle do
+            if blockIdx <= #potentialAltarBlocks then
+                local relBlock = potentialAltarBlocks[blockIdx]
+                -- Convert relative to absolute GPS coordinates
+                local absBlock = {
+                    x = serverPosition.x + relBlock.x,
+                    y = serverPosition.y + relBlock.y,
+                    z = serverPosition.z + relBlock.z
+                }
+                table.insert(blocksToCheck, absBlock)
+                blockIdx = blockIdx + 1
+            end
+        end
+        
+        if #blocksToCheck > 0 then
+            print("Turtle #" .. turtle.id .. " checking " .. #blocksToCheck .. " blocks")
+            
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "setup_verify_blocks",
+                data = {
+                    turtleId = turtle.id,
+                    blocks = blocksToCheck
+                }
+            })
+        end
+    end
+end
+
+-- Complete setup cycle
+local function completeSetupCycle()
+    setupComplete = true
+    print("")
+    print("=================================")
+    print("Setup Cycle Complete!")
+    print("=================================")
+    print("Altars found: " .. #altars)
+    print("System ready for infusion!")
+    print("")
+    
+    broadcast("setup_complete", {
+        altarCount = #altars
     })
 end
 
@@ -671,6 +755,24 @@ local function handleMessage(msg, sender)
     if msg.type == "turtle_register" then
         registerTurtle(sender, msg.data.position, msg.data.isGloveTurtle or false)
     
+    elseif msg.type == "setup_verification_complete" then
+        -- Turtle finished checking its assigned blocks
+        local foundAltars = msg.data.foundAltars or 0
+        print("Turtle #" .. msg.data.turtleId .. " setup complete, found " .. foundAltars .. " altars")
+        
+        -- Check if all turtles finished setup
+        local allDone = true
+        for _, turtle in ipairs(turtles) do
+            if turtle.status ~= "idle" then
+                allDone = false
+                break
+            end
+        end
+        
+        if allDone and not setupComplete then
+            completeSetupCycle()
+        end
+    
     elseif msg.type == "altar_found" then
         registerAltar(msg.data.catalystPos, msg.data.pedestalPositions, msg.data.turtleId)
     
@@ -703,7 +805,8 @@ local function handleMessage(msg, sender)
             altars = altars,
             activeInfusions = activeInfusions,
             errorMode = errorMode,
-            errorMessage = errorMessage
+            errorMessage = errorMessage,
+            setupComplete = setupComplete
         })
     
     elseif msg.type == "clear_error" then
@@ -787,8 +890,8 @@ local function main()
             -- Retry pending messages
             retryPendingMessages()
             
-            -- Check for recipe matches
-            if not errorMode and #turtles >= 1 and #altars > 0 then
+            -- Check for recipe matches (only after setup is complete)
+            if setupComplete and not errorMode and #turtles >= 1 and #altars > 0 then
                 local recipeId, recipe = findMatchingRecipe()
                 if recipeId then
                     for altarIdx, altar in ipairs(altars) do
