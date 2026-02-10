@@ -194,6 +194,7 @@ local function findMatchingRecipe()
     for recipeId, recipe in ipairs(recipes) do
         local catalystFound = false
         local ingredientsFound = {}
+        local matched = true
         
         -- Check catalyst
         for _, chestItem in ipairs(chestItems) do
@@ -203,38 +204,37 @@ local function findMatchingRecipe()
             end
         end
         
-        if not catalystFound then
-            goto continue
-        end
-        
-        -- Check ingredients
-        for _, ingredient in ipairs(recipe.ingredients) do
-            local found = false
-            for _, chestItem in ipairs(chestItems) do
-                local alreadyUsed = false
-                for _, usedItem in ipairs(ingredientsFound) do
-                    if usedItem.slot == chestItem.slot then
-                        alreadyUsed = true
+        if catalystFound then
+            -- Check ingredients
+            for _, ingredient in ipairs(recipe.ingredients) do
+                local found = false
+                for _, chestItem in ipairs(chestItems) do
+                    local alreadyUsed = false
+                    for _, usedItem in ipairs(ingredientsFound) do
+                        if usedItem.slot == chestItem.slot then
+                            alreadyUsed = true
+                            break
+                        end
+                    end
+                    
+                    if not alreadyUsed and itemsMatch(chestItem, ingredient.item, ingredient.matchNBT, ingredient.matchDMG) then
+                        table.insert(ingredientsFound, chestItem)
+                        found = true
                         break
                     end
                 end
                 
-                if not alreadyUsed and itemsMatch(chestItem, ingredient.item, ingredient.matchNBT, ingredient.matchDMG) then
-                    table.insert(ingredientsFound, chestItem)
-                    found = true
+                if not found then
+                    matched = false
                     break
                 end
             end
             
-            if not found then
-                goto continue
+            -- Found a match!
+            if matched then
+                return recipeId, recipe
             end
         end
-        
-        -- Found a match!
-        return recipeId, recipe
-        
-        ::continue::
     end
     
     return nil
