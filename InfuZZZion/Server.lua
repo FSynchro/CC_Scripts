@@ -242,7 +242,7 @@ local function sendWithAck(msgType, data, targetId)
         lastSent = os.epoch("utc")
     }
     
-    modem.transmit(CHANNEL, CHANNEL, {
+    modem.transmit(targetId, CHANNEL, {...})
         type = msgType,
         data = data,
         msgId = msgId,
@@ -335,7 +335,7 @@ local function startSetupCycle()
         if #blocksToCheck > 0 then
             print("Turtle #" .. turtle.id .. " checking " .. #blocksToCheck .. " blocks")
             
-            modem.transmit(CHANNEL, CHANNEL, {
+            modem.transmit(turtle.computerId, CHANNEL, {
                 type = "setup_verify_blocks",
                 data = {
                     turtleId = turtle.id,
@@ -431,7 +431,7 @@ local function registerTurtle(computerId, position, isGloveTurtle)
     end
     
     -- Send assigned ID back to turtle
-    modem.transmit(CHANNEL, CHANNEL, {
+    modem.transmit(computerId, CHANNEL, {
         type = "turtle_id_assigned",
         data = {
             computerId = computerId,
@@ -682,7 +682,7 @@ local function startInfusion(recipeId, recipe, altarIdx)
     -- Send tasks to turtles
     for _, turtle in ipairs(turtles) do
         if #turtle.tasks > 0 then
-            modem.transmit(CHANNEL, CHANNEL, {
+            modem.transmit(turtle.computerId, CHANNEL, {
                 type = "turtle_tasks",
                 data = {
                     turtleId = turtle.id,
