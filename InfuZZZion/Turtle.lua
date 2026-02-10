@@ -32,67 +32,67 @@ local function moveTo(target)
     local current = getPosition()
     if not current then return false end
 
-    -- 1. Helper to face a specific direction using GPS probing
-    local function face(axis, targetVal)
-        while true do
+    -- 1. EMERGENCY FUEL CHECK
+    if turtle.getFuelLevel() < 10 then
+        print("ERROR: Out of fuel! Please add fuel.")
+        return false
+    end
+
+    -- 2. BETTER DIRECTION PROBE
+    local function align(axis, targetCoord)
+        local moving = true
+        while moving do
             local p1 = getPosition()
-            if not p1 then return end
-            
-            -- Try to move. If blocked, we have a different problem.
+            -- Try to move. If blocked, try to dig.
             if not turtle.forward() then 
-                turtle.dig() -- Clear path if needed
-                turtle.forward()
+                turtle.dig() 
+                if not turtle.forward() then return false end
             end
-            
             local p2 = getPosition()
-            turtle.back() -- Return to spot
-            
-            -- Check if we moved in the right direction
+            turtle.back() -- Return to original spot
+
+            -- Determine if we are facing the right way
+            local success = false
             if axis == "x" then
-                if targetVal > p1.x and p2.x > p1.x then break end -- Facing East
-                if targetVal < p1.x and p2.x < p1.x then break end -- Facing West
+                if targetCoord > p1.x and p2.x > p1.x then success = true end -- East
+                if targetCoord < p1.x and p2.x < p1.x then success = true end -- West
             elseif axis == "z" then
-                if targetVal > p1.z and p2.z > p1.z then break end -- Facing South
-                if targetVal < p1.z and p2.z < p1.z then break end -- Facing North
+                if targetCoord > p1.z and p2.z > p1.z then success = true end -- South
+                if targetCoord < p1.z and p2.z < p1.z then success = true end -- North
             end
-            turtle.turnRight()
+
+            if success then 
+                moving = false 
+            else 
+                turtle.turnRight() 
+            end
         end
+        return true
     end
 
-    -- 2. Move X
+    -- 3. MOVE X AND Z FIRST (Stay high to avoid altar)
     if math.floor(current.x) ~= math.floor(target.x) then
-        face("x", target.x)
+        align("x", target.x)
         while math.floor(current.x) ~= math.floor(target.x) do
-            if turtle.forward() then
-                current = getPosition()
-            else
-                return false
-            end
+            if not turtle.forward() then break end
+            current = getPosition()
         end
     end
 
-    -- 3. Move Z
     if math.floor(current.z) ~= math.floor(target.z) then
-        face("z", target.z)
+        align("z", target.z)
         while math.floor(current.z) ~= math.floor(target.z) do
-            if turtle.forward() then
-                current = getPosition()
-            else
-                return false
-            end
+            if not turtle.forward() then break end
+            current = getPosition()
         end
     end
 
-    -- 4. Move Y LAST (Down to the altar)
+    -- 4. MOVE Y (Down to the target)
     while current.y > target.y do
-        if not turtle.down() then return false end
+        if not turtle.down() then break end
         current.y = current.y - 1
     end
-    while current.y < target.y do
-        if not turtle.up() then return false end
-        current.y = current.y + 1
-    end
-
+    
     return true
 end
 
