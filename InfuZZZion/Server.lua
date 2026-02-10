@@ -11,8 +11,6 @@ local turtles = {}
 local gloveTurtle = nil
 local altars = {}
 local inputChest = nil
-local meInterface = nil
-local gloveChests = {}
 local currentRecipe = nil
 local errorMode = false
 local errorMessage = ""
@@ -34,19 +32,12 @@ local function findPeripherals()
         table.insert(errors, "Input chest not found on RIGHT side")
     end
     
-    -- Find ME Interface (opposite of computer from chest)
-    meInterface = peripheral.wrap("left")
-    if not meInterface then
-        table.insert(errors, "ME Interface not found on LEFT side (opposite of chest)")
-    else
-        -- Verify it's an ME Interface by checking for AE2 methods
-        -- ME Interfaces have methods like getItemsInNetwork, getCraftingCPUs, etc.
-        local hasAE2Methods = meInterface.getItemsInNetwork or meInterface.getCraftingCPUs or meInterface.getAvailableItems
-        if not hasAE2Methods then
-            table.insert(errors, "Peripheral on LEFT is not an ME Interface (found: " .. peripheral.getType("left") .. ")")
-            meInterface = nil
-        end
-    end
+    -- ME Interface is on the opposite side of the chest
+    -- We don't need to wrap it - turtles will interact with it directly
+    -- Just verify the setup info is correct
+    print("Setup: [Computer] <- [Chest] -> [ME Interface]")
+    print("Chest should be on RIGHT of computer")
+    print("ME Interface should be on opposite side of chest")
     
     return errors
 end
