@@ -28,105 +28,71 @@ local function getPosition()
     return {x = x, y = y, z = z}
 end
 
--- Move to position
 local function moveTo(target)
     local current = getPosition()
-    if not current then
-        print("ERROR: Cannot get GPS position!")
-        return false
-    end
-    
-    -- Move in Y first
-    while current.y < target.y do
-        if not turtle.up() then
-            print("ERROR: Cannot move up")
-            return false
+    if not current then return false end
+
+    -- 1. Helper to face a specific direction using GPS probing
+    local function face(axis, targetVal)
+        while true do
+            local p1 = getPosition()
+            if not p1 then return end
+            
+            -- Try to move. If blocked, we have a different problem.
+            if not turtle.forward() then 
+                turtle.dig() -- Clear path if needed
+                turtle.forward()
+            end
+            
+            local p2 = getPosition()
+            turtle.back() -- Return to spot
+            
+            -- Check if we moved in the right direction
+            if axis == "x" then
+                if targetVal > p1.x and p2.x > p1.x then break end -- Facing East
+                if targetVal < p1.x and p2.x < p1.x then break end -- Facing West
+            elseif axis == "z" then
+                if targetVal > p1.z and p2.z > p1.z then break end -- Facing South
+                if targetVal < p1.z and p2.z < p1.z then break end -- Facing North
+            end
+            turtle.turnRight()
         end
-        current.y = current.y + 1
     end
-    
+
+    -- 2. Move X
+    if math.floor(current.x) ~= math.floor(target.x) then
+        face("x", target.x)
+        while math.floor(current.x) ~= math.floor(target.x) do
+            if turtle.forward() then
+                current = getPosition()
+            else
+                return false
+            end
+        end
+    end
+
+    -- 3. Move Z
+    if math.floor(current.z) ~= math.floor(target.z) then
+        face("z", target.z)
+        while math.floor(current.z) ~= math.floor(target.z) do
+            if turtle.forward() then
+                current = getPosition()
+            else
+                return false
+            end
+        end
+    end
+
+    -- 4. Move Y LAST (Down to the altar)
     while current.y > target.y do
-        if not turtle.down() then
-            print("ERROR: Cannot move down")
-            return false
-        end
+        if not turtle.down() then return false end
         current.y = current.y - 1
     end
-    
-    -- Move in X
-    while current.x < target.x do
-        -- Face east
-        while true do
-            local pos = getPosition()
-            turtle.forward()
-            local newPos = getPosition()
-            if newPos.x > pos.x then
-                turtle.back()
-                break
-            end
-            turtle.back()
-            turtle.turnRight()
-        end
-        
-        turtle.forward()
-        current.x = current.x + 1
+    while current.y < target.y do
+        if not turtle.up() then return false end
+        current.y = current.y + 1
     end
-    
-    while current.x > target.x do
-        -- Face west
-        while true do
-            local pos = getPosition()
-            turtle.forward()
-            local newPos = getPosition()
-            if newPos.x < pos.x then
-                turtle.back()
-                break
-            end
-            turtle.back()
-            turtle.turnRight()
-        end
-        
-        turtle.forward()
-        current.x = current.x - 1
-    end
-    
-    -- Move in Z
-    while current.z < target.z do
-        -- Face south
-        while true do
-            local pos = getPosition()
-            turtle.forward()
-            local newPos = getPosition()
-            if newPos.z > pos.z then
-                turtle.back()
-                break
-            end
-            turtle.back()
-            turtle.turnRight()
-        end
-        
-        turtle.forward()
-        current.z = current.z + 1
-    end
-    
-    while current.z > target.z do
-        -- Face north
-        while true do
-            local pos = getPosition()
-            turtle.forward()
-            local newPos = getPosition()
-            if newPos.z < pos.z then
-                turtle.back()
-                break
-            end
-            turtle.back()
-            turtle.turnRight()
-        end
-        
-        turtle.forward()
-        current.z = current.z - 1
-    end
-    
+
     return true
 end
 
