@@ -249,6 +249,88 @@ local function findSurroundingPedestals(catalystPos)
     return pedestals
 end
 
+-- Find chest and ME Interface positions
+local function findChestPositions()
+    print("Searching for input chest and ME Interface...")
+    
+    local searchRadius = 10
+    local currentPos = getPosition()
+    
+    if not currentPos then
+        print("ERROR: Cannot get GPS position")
+        return
+    end
+    
+    local chestPos = nil
+    local mePos = nil
+    
+    -- Search nearby for chest
+    for dx = -searchRadius, searchRadius do
+        for dy = -searchRadius, searchRadius do
+            for dz = -searchRadius, searchRadius do
+                local checkPos = {
+                    x = currentPos.x + dx,
+                    y = currentPos.y + dy,
+                    z = currentPos.z + dz
+                }
+                
+                if moveTo(checkPos) then
+                    -- Check for chest below
+                    local success, block = turtle.inspectDown()
+                    if success and block.name and block.name:find("chest") then
+                        print("Found chest at " .. textutils.serialize(checkPos))
+                        chestPos = {x = checkPos.x, y = checkPos.y - 1, z = checkPos.z}
+                        
+                        -- ME Interface should be on opposite side of chest
+                        -- Try each direction
+                        for _, dir in ipairs({{1,0,0}, {-1,0,0}, {0,0,1}, {0,0,-1}}) do
+                            local testPos = {
+                                x = chestPos.x + dir[1],
+                                y = chestPos.y,
+                                z = chestPos.z + dir[3]
+                            }
+                            
+                            local aboveTest = {x = testPos.x, y = testPos.y + 1, z = testPos.z}
+                            if moveTo(aboveTest) then
+                                local meSuccess, meBlock = turtle.inspectDown()
+                                if meSuccess and meBlock.name and meBlock.name:find("interface") then
+                                    print("Found ME Interface at " .. textutils.serialize(testPos))
+                                    mePos = testPos
+                                    break
+                                end
+                            end
+                        end
+                        
+                        if chestPos and mePos then
+                            break
+                        end
+                    end
+                end
+                
+                if chestPos and mePos then break end
+            end
+            if chestPos and mePos then break end
+        end
+        if chestPos and mePos then break end
+    end
+    
+    -- Return home
+    returnHome()
+    
+    -- Report positions
+    if chestPos and mePos then
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "chest_positions_found",
+            data = {
+                chestPosition = chestPos,
+                meInterfacePosition = mePos
+            }
+        })
+    else
+        print("ERROR: Could not find chest and/or ME Interface")
+    end
+end
+
 -- Check if near glove chest
 local function checkGloveChest()
     -- TODO: Implement glove chest detection
@@ -257,25 +339,25 @@ local function checkGloveChest()
 end
 
 -- Place item on pedestal
-local function placeItemOnPedestal(item, position)
+local function placeItemOnPedestal(item, position, chestPosition)
     print("Placing item on pedestal at " .. textutils.serialize(position))
     
-    -- Move above pedestal
-    local targetPos = {
-        x = position.x,
-        y = position.y + 1,
-        z = position.z
+    -- First, move to Y level above the chest
+    local chestAbovePos = {
+        x = chestPosition.x,
+        y = chestPosition.y + 1,
+        z = chestPosition.z
     }
     
-    if not moveTo(targetPos) then
-        print("ERROR: Cannot move to pedestal")
+    if not moveTo(chestAbovePos) then
+        print("ERROR: Cannot move above chest")
         return false
     end
     
-    -- Use manipulator to get chest inventory
-    local chest = peripheral.wrap("bottom") -- Assuming we're at the input chest level
-    if not chest then
-        print("ERROR: Cannot find chest")
+    -- Get chest below us
+    local chest = peripheral.wrap("bottom")
+    if not chest or not chest.list then
+        print("ERROR: Cannot find chest below")
         return false
     end
     
@@ -283,13 +365,13 @@ local function placeItemOnPedestal(item, position)
     local itemSlot = nil
     for slot, chestItem in pairs(chest.list()) do
         local detail = chest.getItemDetail(slot)
-        if detail.name == item.name then
+        if detail and detail.name == item.item.name then
             -- Check NBT/DMG if needed
             local match = true
-            if item.matchDMG and detail.damage ~= item.damage then
+            if item.matchDMG and (detail.damage or 0) ~= (item.item.damage or 0) then
                 match = false
             end
-            if item.matchNBT and detail.nbt ~= item.nbt then
+            if item.matchNBT and (detail.nbt or "") ~= (item.item.nbt or "") then
                 match = false
             end
             
@@ -301,56 +383,89 @@ local function placeItemOnPedestal(item, position)
     end
     
     if not itemSlot then
-        print("ERROR: Item not found in chest")
+        print("ERROR: Item not found in chest: " .. item.item.name)
         return false
     end
     
-    -- Move item from chest to pedestal
-    -- First, we need to be at the pedestal
-    moveTo(position)
-    
-    -- Get pedestal as peripheral
-    local pedestal = peripheral.wrap("bottom")
-    if not pedestal then
-        print("ERROR: Cannot find pedestal")
+    -- Suck item from chest into turtle
+    if not turtle.suckDown(1) then
+        print("ERROR: Cannot suck item from chest")
         return false
     end
     
-    -- Use manipulator to transfer
-    if manipulator then
-        manipulator.getInventory("bottom").pushItems(peripheral.getName(chest), itemSlot, 1, 1)
+    print("Picked up item from chest")
+    
+    -- Move up one more level (to be 2 blocks above chest, 1 above pedestal)
+    if not turtle.up() then
+        print("ERROR: Cannot move up from chest")
+        return false
     end
     
+    -- Now move to position above the pedestal (Y+1 above pedestal level)
+    local pedestalAbovePos = {
+        x = position.x,
+        y = position.y + 1,
+        z = position.z
+    }
+    
+    if not moveTo(pedestalAbovePos) then
+        print("ERROR: Cannot move to pedestal")
+        return false
+    end
+    
+    -- Drop item onto pedestal below
+    if not turtle.dropDown(1) then
+        print("ERROR: Cannot drop item onto pedestal")
+        return false
+    end
+    
+    print("Item placed on pedestal!")
     return true
 end
 
 -- Retrieve item from pedestal
-local function retrieveItemFromPedestal(position)
+local function retrieveItemFromPedestal(position, meInterfacePosition)
     print("Retrieving item from pedestal at " .. textutils.serialize(position))
     
-    -- Move to pedestal
-    moveTo(position)
+    -- Move to position above pedestal (Y+1)
+    local pedestalAbovePos = {
+        x = position.x,
+        y = position.y + 1,
+        z = position.z
+    }
     
-    -- Get pedestal
-    local pedestal = peripheral.wrap("bottom")
-    if not pedestal then
-        print("ERROR: Cannot find pedestal")
+    if not moveTo(pedestalAbovePos) then
+        print("ERROR: Cannot move to pedestal")
         return false
     end
     
-    -- Get ME Interface (we need to know its position - for now assume it's known)
-    -- TODO: Get ME Interface position from server
-    
-    -- Transfer item
-    if manipulator then
-        -- Pull from pedestal
-        local items = pedestal.list()
-        for slot, item in pairs(items) do
-            -- Push to ME Interface
-            -- manipulator.getInventory("bottom").pushItems(meInterfaceName, slot, item.count)
-        end
+    -- Suck item from pedestal below
+    if not turtle.suckDown(1) then
+        print("ERROR: Cannot suck item from pedestal (may be empty)")
+        return false
     end
     
+    print("Picked up result item")
+    
+    -- Move to position above ME Interface
+    local meAbovePos = {
+        x = meInterfacePosition.x,
+        y = meInterfacePosition.y + 1,
+        z = meInterfacePosition.z
+    }
+    
+    if not moveTo(meAbovePos) then
+        print("ERROR: Cannot move to ME Interface")
+        return false
+    end
+    
+    -- Drop item into ME Interface below
+    if not turtle.dropDown(1) then
+        print("ERROR: Cannot drop item into ME Interface")
+        return false
+    end
+    
+    print("Result deposited into ME Interface!")
     return true
 end
 
@@ -359,13 +474,13 @@ local function executeTask(task)
     print("Executing task: " .. task.type)
     
     if task.type == "place_catalyst" then
-        return placeItemOnPedestal(task.item, task.position)
+        return placeItemOnPedestal(task.item, task.position, task.chestPosition)
         
     elseif task.type == "place_ingredient" then
-        return placeItemOnPedestal(task.item, task.position)
+        return placeItemOnPedestal(task.item, task.position, task.chestPosition)
         
     elseif task.type == "retrieve_result" then
-        return retrieveItemFromPedestal(task.position)
+        return retrieveItemFromPedestal(task.position, task.meInterfacePosition)
         
     end
     
@@ -397,7 +512,10 @@ end
 local function handleMessage(msg)
     if type(msg) ~= "table" or not msg.type then return end
     
-    if msg.type == "discover_altars" then
+    if msg.type == "find_chest_positions" then
+        findChestPositions()
+        
+    elseif msg.type == "discover_altars" then
         findCatalystPedestals()
         
     elseif msg.type == "turtle_tasks" then
