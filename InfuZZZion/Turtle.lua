@@ -1,17 +1,17 @@
--- Thaumcraft Infusion Turtle Worker
+-- Thaumcraft Infusion Turtle Worker v2.0
 -- Handles item placement, retrieval, and altar discovery
 
 local CHANNEL = 1742
-local CATALYST_BLOCK = "thermalfoundation:storage"
-local CATALYST_BLOCK_META = 8
+local PEDESTAL_BLOCK = "Thaumcraft:blockPedestal" -- Adjust based on actual block ID
 
 -- State
 local modem = peripheral.find("modem")
-local manipulator = peripheral.find("manipulator")
 local homePosition = nil
 local tasks = {}
-local isGloveTurtle = false
-local turtleId = os.getComputerID()
+local turtleId = nil
+local assignedId = nil
+local chestPosition = nil
+local meInterfacePosition = nil
 
 if not modem then
     error("No wireless modem found! Please attach an ender modem.")
@@ -25,44 +25,51 @@ local function getPosition()
     if not x then
         return nil
     end
-    return {x = x, y = y, z = z}
+    return {x = math.floor(x), y = math.floor(y), z = math.floor(z)}
 end
 
+-- Send status update to server
+local function updateStatus(status, statusDetail)
+    modem.transmit(CHANNEL, CHANNEL, {
+        type = "turtle_status_update",
+        data = {
+            turtleId = assignedId,
+            status = status,
+            statusDetail = statusDetail
+        }
+    })
+end
 
---- Fuel configuration and logic
-
+-- Fuel management
 local MIN_FUEL = 200
 local REFUEL_THRESHOLD = 50
-local COAL_COUNT = 16
 
-local function checkFuel(meInterfacePosition)
-    -- 1. Try to refuel from internal inventory first
+local function checkFuel()
+    -- Try to refuel from internal inventory first
     if turtle.getFuelLevel() < MIN_FUEL then
         for i = 1, 16 do
             turtle.select(i)
-            if turtle.refuel(0) then -- Checks if item is fuel
+            if turtle.refuel(0) then
                 turtle.refuel()
                 print("Refueled! Current level: " .. turtle.getFuelLevel())
             end
         end
     end
-
-    -- 2. If still critically low, override and go to ME Interface
+    
+    -- Critical fuel warning
     if turtle.getFuelLevel() < REFUEL_THRESHOLD then
         if meInterfacePosition then
             print("CRITICAL FUEL: Going to ME Interface for coal...")
+            updateStatus("refueling", "critical fuel level")
             
-            -- Move above ME Interface
             local target = {
-                x = meInterfacePosition.x, 
-                y = meInterfacePosition.y + 1, 
+                x = meInterfacePosition.x,
+                y = meInterfacePosition.y + 1,
                 z = meInterfacePosition.z
             }
             
-            -- We call moveTo but we must bypass the fuel check inside it to avoid a loop
-            -- For simplicity, we move manually or use a flag
-            if moveTo(target, true) then 
-                turtle.suckDown(COAL_COUNT)
+            if moveTo(target, true) then
+                turtle.suckDown(16)
                 turtle.refuel()
                 print("Emergency refuel complete.")
                 return true
@@ -71,78 +78,121 @@ local function checkFuel(meInterfacePosition)
             print("CRITICAL FUEL: No ME Interface known!")
         end
     end
+    
     return turtle.getFuelLevel() > REFUEL_THRESHOLD
 end
 
-local function moveTo(target)
-
-    if not bypassFuel and not checkFuel(meInterfacePosition) then
+-- Movement with fuel check
+local function moveTo(target, bypassFuel)
+    if not bypassFuel and not checkFuel() then
         print("STALLED: Waiting for fuel...")
         return false
     end
     
     local current = getPosition()
     if not current then return false end
-
-    -- 1. EMERGENCY FUEL CHECK
+    
     if turtle.getFuelLevel() < 10 then
-        print("ERROR: Out of fuel! Please add fuel.")
+        print("ERROR: Out of fuel!")
         return false
     end
-
-    -- 2. BETTER DIRECTION PROBE
+    
+    -- Direction alignment helper
     local function align(axis, targetCoord)
-        local moving = true
-        while moving do
+        local attempts = 0
+        while attempts < 4 do
             local p1 = getPosition()
-            -- Try to move. If blocked, try to dig.
-            if not turtle.forward() then 
-                turtle.dig() 
-                if not turtle.forward() then return false end
+            
+            if not turtle.forward() then
+                turtle.dig()
+                if not turtle.forward() then 
+                    return false 
+                end
             end
+            
             local p2 = getPosition()
-            turtle.back() -- Return to original spot
-
-            -- Determine if we are facing the right way
+            turtle.back()
+            
             local success = false
             if axis == "x" then
-                if targetCoord > p1.x and p2.x > p1.x then success = true end -- East
-                if targetCoord < p1.x and p2.x < p1.x then success = true end -- West
+                if targetCoord > p1.x and p2.x > p1.x then success = true end
+                if targetCoord < p1.x and p2.x < p1.x then success = true end
             elseif axis == "z" then
-                if targetCoord > p1.z and p2.z > p1.z then success = true end -- South
-                if targetCoord < p1.z and p2.z < p1.z then success = true end -- North
+                if targetCoord > p1.z and p2.z > p1.z then success = true end
+                if targetCoord < p1.z and p2.z < p1.z then success = true end
             end
-
-            if success then 
-                moving = false 
-            else 
-                turtle.turnRight() 
-            end
+            
+            if success then return true end
+            
+            turtle.turnRight()
+            attempts = attempts + 1
         end
-        return true
+        return false
     end
-
-    -- 3. MOVE X AND Z FIRST (Stay high to avoid altar)
-    if math.floor(current.x) ~= math.floor(target.x) then
+    
+    -- Move X
+    if current.x ~= target.x then
         align("x", target.x)
-        while math.floor(current.x) ~= math.floor(target.x) do
-            if not turtle.forward() then break end
-            current = getPosition()
+        while current.x ~= target.x do
+            if current.x < target.x then
+                if not turtle.forward() then
+                    turtle.dig()
+                    if not turtle.forward() then break end
+                end
+                current.x = current.x + 1
+            else
+                turtle.turnRight()
+                turtle.turnRight()
+                if not turtle.forward() then
+                    turtle.dig()
+                    if not turtle.forward() then break end
+                end
+                current.x = current.x - 1
+                turtle.turnRight()
+                turtle.turnRight()
+            end
         end
     end
-
-    if math.floor(current.z) ~= math.floor(target.z) then
+    
+    -- Move Z
+    if current.z ~= target.z then
         align("z", target.z)
-        while math.floor(current.z) ~= math.floor(target.z) do
-            if not turtle.forward() then break end
-            current = getPosition()
+        while current.z ~= target.z do
+            if current.z < target.z then
+                if not turtle.forward() then
+                    turtle.dig()
+                    if not turtle.forward() then break end
+                end
+                current.z = current.z + 1
+            else
+                turtle.turnRight()
+                turtle.turnRight()
+                if not turtle.forward() then
+                    turtle.dig()
+                    if not turtle.forward() then break end
+                end
+                current.z = current.z - 1
+                turtle.turnRight()
+                turtle.turnRight()
+            end
         end
     end
-
-    -- 4. MOVE Y (Down to the target)
+    
+    -- Move Y
     while current.y > target.y do
-        if not turtle.down() then break end
+        if not turtle.down() then
+            turtle.digDown()
+            if not turtle.down() then break end
+        end
         current.y = current.y - 1
+    end
+    
+    while current.y < target.y do
+        if not turtle.up() then
+            turtle.digUp()
+            if not turtle.up() then break end
+        end
+        current.y = current.y + 1
     end
     
     return true
@@ -152,24 +202,26 @@ end
 local function returnHome()
     if homePosition then
         print("Returning home...")
+        updateStatus("returning", "going to home position")
         moveTo(homePosition)
+        updateStatus("idle", "waiting")
         
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_returned",
             data = {
-                turtleId = turtleId
+                turtleId = assignedId
             }
         })
     end
 end
 
--- Scan for catalyst pedestals
-local function findCatalystPedestals()
-    print("Scanning for catalyst pedestals...")
-    local foundAltars = {}
+-- Scan for infusion altars
+local function scanForAltars()
+    print("Scanning for infusion altars...")
+    updateStatus("scanning", "detecting infusion pedestals")
     
-    -- Scan area around turtle
-    local scanRadius = 16
+    local foundAltars = {}
+    local scanRadius = 20
     local currentPos = getPosition()
     
     if not currentPos then
@@ -177,194 +229,140 @@ local function findCatalystPedestals()
         return
     end
     
-    for dx = -scanRadius, scanRadius do
-        for dy = -scanRadius, scanRadius do
-            for dz = -scanRadius, scanRadius do
+    local scannedPedestals = {}
+    
+    -- Scan in a grid pattern
+    for dy = -5, 5 do -- Check multiple Y levels
+        for dx = -scanRadius, scanRadius, 2 do
+            for dz = -scanRadius, scanRadius, 2 do
                 local checkPos = {
                     x = currentPos.x + dx,
                     y = currentPos.y + dy,
                     z = currentPos.z + dz
                 }
                 
-                -- Move to position
-                if moveTo(checkPos) then
-                    -- Check block below
+                -- Move above position
+                local abovePos = {
+                    x = checkPos.x,
+                    y = checkPos.y + 1,
+                    z = checkPos.z
+                }
+                
+                if moveTo(abovePos) then
                     local success, block = turtle.inspectDown()
-                    if success and block.name == CATALYST_BLOCK and block.metadata == CATALYST_BLOCK_META then
-                        print("Found catalyst pedestal at " .. textutils.serialize(checkPos))
+                    
+                    if success and block.name and block.name:find("edestal") then
+                        -- Found a pedestal
+                        local pedestalPos = {
+                            x = checkPos.x,
+                            y = checkPos.y,
+                            z = checkPos.z
+                        }
                         
-                        -- This is a catalyst pedestal, now find surrounding pedestals
-                        local pedestals = findSurroundingPedestals(checkPos)
+                        -- Check if already scanned
+                        local alreadyScanned = false
+                        for _, p in ipairs(scannedPedestals) do
+                            if p.x == pedestalPos.x and p.y == pedestalPos.y and p.z == pedestalPos.z then
+                                alreadyScanned = true
+                                break
+                            end
+                        end
                         
-                        table.insert(foundAltars, {
-                            catalyst = checkPos,
-                            pedestals = pedestals
-                        })
+                        if not alreadyScanned then
+                            table.insert(scannedPedestals, pedestalPos)
+                            print("Found pedestal at " .. textutils.serialize(pedestalPos))
+                        end
                     end
                 end
             end
         end
     end
     
-    -- Return home
-    returnHome()
+    -- Group pedestals into altars (7x7 grid, same Y level)
+    print("Grouping pedestals into altars...")
+    local processed = {}
     
-    -- Report found altars
-    for _, altar in ipairs(foundAltars) do
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "altar_found",
-            data = {
-                catalystPos = altar.catalyst,
-                pedestalPositions = altar.pedestals
+    for _, pedestal in ipairs(scannedPedestals) do
+        local key = pedestal.x .. "," .. pedestal.y .. "," .. pedestal.z
+        if not processed[key] then
+            -- Try to find altar centered here or nearby
+            local possibleCenters = {
+                {x = pedestal.x, z = pedestal.z},
+                {x = pedestal.x + 4, z = pedestal.z},
+                {x = pedestal.x - 4, z = pedestal.z},
+                {x = pedestal.x, z = pedestal.z + 4},
+                {x = pedestal.x, z = pedestal.z - 4}
             }
-        })
-    end
-end
-
--- Find pedestals around catalyst
-local function findSurroundingPedestals(catalystPos)
-    local pedestals = {}
-    
-    -- Pedestal layout pattern
-    local pattern = {
-        {x = 0, z = -4},  -- 1
-        {x = 0, z = 4},   -- 2
-        {x = -4, z = 0},  -- 3
-        {x = 4, z = 0},   -- 4
-        {x = -4, z = -4}, -- 5
-        {x = 4, z = 4},   -- 6
-        {x = 4, z = -4},  -- 7
-        {x = -4, z = 4},  -- 8
-        {x = -2, z = -4}, -- 9
-        {x = 2, z = 4},   -- 10
-        {x = 2, z = -4},  -- 11
-        {x = -2, z = 4}   -- 12
-    }
-    
-    for i, offset in ipairs(pattern) do
-        local pedestalPos = {
-            x = catalystPos.x + offset.x,
-            y = catalystPos.y,
-            z = catalystPos.z + offset.z
-        }
-        
-        -- Move above pedestal
-        local checkPos = {
-            x = pedestalPos.x,
-            y = pedestalPos.y + 1,
-            z = pedestalPos.z
-        }
-        
-        if moveTo(checkPos) then
-            local success, block = turtle.inspectDown()
-            if success and block.name and block.name:find("pedestal") then
-                print("Found pedestal #" .. i)
-                table.insert(pedestals, pedestalPos)
-            end
-        end
-    end
-    
-    return pedestals
-end
-
--- Find chest and ME Interface positions
-local function findChestPositions()
-    print("Searching for input chest and ME Interface...")
-    
-    local searchRadius = 10
-    local currentPos = getPosition()
-    
-    if not currentPos then
-        print("ERROR: Cannot get GPS position")
-        return
-    end
-    
-    local chestPos = nil
-    local mePos = nil
-    
-    -- Search nearby for chest
-    for dx = -searchRadius, searchRadius do
-        for dy = -searchRadius, searchRadius do
-            for dz = -searchRadius, searchRadius do
-                local checkPos = {
-                    x = currentPos.x + dx,
-                    y = currentPos.y + dy,
-                    z = currentPos.z + dz
+            
+            for _, center in ipairs(possibleCenters) do
+                local altarPedestals = {}
+                local catalystPos = {x = center.x, y = pedestal.y, z = center.z}
+                
+                -- Check if pedestals exist in 7x7 pattern around center
+                local pattern = {
+                    {x = 0, z = -4}, {x = 0, z = 4},
+                    {x = -4, z = 0}, {x = 4, z = 0},
+                    {x = -4, z = -4}, {x = 4, z = 4},
+                    {x = 4, z = -4}, {x = -4, z = 4}
                 }
                 
-                if moveTo(checkPos) then
-                    -- Check for chest below
-                    local success, block = turtle.inspectDown()
-                    if success and block.name and block.name:find("chest") then
-                        print("Found chest at " .. textutils.serialize(checkPos))
-                        chestPos = {x = checkPos.x, y = checkPos.y - 1, z = checkPos.z}
-                        
-                        -- ME Interface should be on opposite side of chest
-                        -- Try each direction
-                        for _, dir in ipairs({{1,0,0}, {-1,0,0}, {0,0,1}, {0,0,-1}}) do
-                            local testPos = {
-                                x = chestPos.x + dir[1],
-                                y = chestPos.y,
-                                z = chestPos.z + dir[3]
-                            }
-                            
-                            local aboveTest = {x = testPos.x, y = testPos.y + 1, z = testPos.z}
-                            if moveTo(aboveTest) then
-                                local meSuccess, meBlock = turtle.inspectDown()
-                                if meSuccess and meBlock.name and meBlock.name:find("interface") then
-                                    print("Found ME Interface at " .. textutils.serialize(testPos))
-                                    mePos = testPos
-                                    break
-                                end
-                            end
-                        end
-                        
-                        if chestPos and mePos then
+                local found = 0
+                for _, offset in ipairs(pattern) do
+                    local testPos = {
+                        x = catalystPos.x + offset.x,
+                        y = catalystPos.y,
+                        z = catalystPos.z + offset.z
+                    }
+                    
+                    for _, p in ipairs(scannedPedestals) do
+                        if p.x == testPos.x and p.y == testPos.y and p.z == testPos.z then
+                            table.insert(altarPedestals, testPos)
+                            found = found + 1
                             break
                         end
                     end
                 end
                 
-                if chestPos and mePos then break end
+                -- If we found at least 4 pedestals in the pattern, it's likely an altar
+                if found >= 4 then
+                    print("Found altar at " .. textutils.serialize(catalystPos) .. " with " .. found .. " pedestals")
+                    
+                    -- Mark all as processed
+                    for _, p in ipairs(altarPedestals) do
+                        local k = p.x .. "," .. p.y .. "," .. p.z
+                        processed[k] = true
+                    end
+                    
+                    -- Report to server
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "altar_found",
+                        data = {
+                            catalystPos = catalystPos,
+                            pedestalPositions = altarPedestals,
+                            turtleId = assignedId
+                        }
+                    })
+                    
+                    break
+                end
             end
-            if chestPos and mePos then break end
         end
-        if chestPos and mePos then break end
     end
     
-    -- Return home
     returnHome()
-    
-    -- Report positions
-    if chestPos and mePos then
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "chest_positions_found",
-            data = {
-                chestPosition = chestPos,
-                meInterfacePosition = mePos
-            }
-        })
-    else
-        print("ERROR: Could not find chest and/or ME Interface")
-    end
-end
-
--- Check if near glove chest
-local function checkGloveChest()
-    -- TODO: Implement glove chest detection
-    -- For now, return false
-    return false
+    print("Altar scan complete")
 end
 
 -- Place item on pedestal
-local function placeItemOnPedestal(item, position, chestPosition)
+local function placeItemOnPedestal(item, position, chestPos)
     print("Placing item on pedestal at " .. textutils.serialize(position))
+    updateStatus("working", "picking up item")
     
-    -- First, move to Y level above the chest
+    -- Move above chest
     local chestAbovePos = {
-        x = chestPosition.x,
-        y = chestPosition.y + 1,
-        z = chestPosition.z
+        x = chestPos.x,
+        y = chestPos.y + 1,
+        z = chestPos.z
     }
     
     if not moveTo(chestAbovePos) then
@@ -372,27 +370,20 @@ local function placeItemOnPedestal(item, position, chestPosition)
         return false
     end
     
-    -- Get chest below us
+    -- Get item from chest
     local chest = peripheral.wrap("bottom")
     if not chest or not chest.list then
         print("ERROR: Cannot find chest below")
         return false
     end
     
-    -- Find item in chest
     local itemSlot = nil
     for slot, chestItem in pairs(chest.list()) do
-        local detail = chest.getItemDetail(slot)
-        if detail and detail.name == item.item.name then
-            -- Check NBT/DMG if needed
+        if chestItem.name == item.item.name then
             local match = true
-            if item.matchDMG and (detail.damage or 0) ~= (item.item.damage or 0) then
+            if item.matchDMG and (chestItem.damage or 0) ~= (item.item.damage or 0) then
                 match = false
             end
-            if item.matchNBT and (detail.nbt or "") ~= (item.item.nbt or "") then
-                match = false
-            end
-            
             if match then
                 itemSlot = slot
                 break
@@ -405,21 +396,15 @@ local function placeItemOnPedestal(item, position, chestPosition)
         return false
     end
     
-    -- Suck item from chest into turtle
     if not turtle.suckDown(1) then
         print("ERROR: Cannot suck item from chest")
         return false
     end
     
     print("Picked up item from chest")
+    updateStatus("working", "placing on pedestal")
     
-    -- Move up one more level (to be 2 blocks above chest, 1 above pedestal)
-    if not turtle.up() then
-        print("ERROR: Cannot move up from chest")
-        return false
-    end
-    
-    -- Now move to position above the pedestal (Y+1 above pedestal level)
+    -- Move to pedestal
     local pedestalAbovePos = {
         x = position.x,
         y = position.y + 1,
@@ -431,7 +416,6 @@ local function placeItemOnPedestal(item, position, chestPosition)
         return false
     end
     
-    -- Drop item onto pedestal below
     if not turtle.dropDown(1) then
         print("ERROR: Cannot drop item onto pedestal")
         return false
@@ -442,10 +426,10 @@ local function placeItemOnPedestal(item, position, chestPosition)
 end
 
 -- Retrieve item from pedestal
-local function retrieveItemFromPedestal(position, meInterfacePosition)
+local function retrieveItemFromPedestal(position, mePos)
     print("Retrieving item from pedestal at " .. textutils.serialize(position))
+    updateStatus("working", "picking up result")
     
-    -- Move to position above pedestal (Y+1)
     local pedestalAbovePos = {
         x = position.x,
         y = position.y + 1,
@@ -457,19 +441,18 @@ local function retrieveItemFromPedestal(position, meInterfacePosition)
         return false
     end
     
-    -- Suck item from pedestal below
     if not turtle.suckDown(1) then
-        print("ERROR: Cannot suck item from pedestal (may be empty)")
+        print("ERROR: Cannot suck item from pedestal")
         return false
     end
     
     print("Picked up result item")
+    updateStatus("working", "depositing to ME")
     
-    -- Move to position above ME Interface
     local meAbovePos = {
-        x = meInterfacePosition.x,
-        y = meInterfacePosition.y + 1,
-        z = meInterfacePosition.z
+        x = mePos.x,
+        y = mePos.y + 1,
+        z = mePos.z
     }
     
     if not moveTo(meAbovePos) then
@@ -477,7 +460,6 @@ local function retrieveItemFromPedestal(position, meInterfacePosition)
         return false
     end
     
-    -- Drop item into ME Interface below
     if not turtle.dropDown(1) then
         print("ERROR: Cannot drop item into ME Interface")
         return false
@@ -492,14 +474,16 @@ local function executeTask(task)
     print("Executing task: " .. task.type)
     
     if task.type == "place_catalyst" then
+        updateStatus("working", "placing catalyst")
         return placeItemOnPedestal(task.item, task.position, task.chestPosition)
         
     elseif task.type == "place_ingredient" then
+        updateStatus("working", "placing ingredient")
         return placeItemOnPedestal(task.item, task.position, task.chestPosition)
         
     elseif task.type == "retrieve_result" then
+        updateStatus("working", "retrieving result")
         return retrieveItemFromPedestal(task.position, task.meInterfacePosition)
-        
     end
     
     return false
@@ -512,17 +496,15 @@ local function processTasks()
         
         local success = executeTask(task)
         
-        -- Notify server
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_task_complete",
             data = {
-                turtleId = turtleId,
+                turtleId = assignedId,
                 success = success
             }
         })
     end
     
-    -- Return home
     returnHome()
 end
 
@@ -530,14 +512,24 @@ end
 local function handleMessage(msg)
     if type(msg) ~= "table" or not msg.type then return end
     
-    if msg.type == "find_chest_positions" then
-        findChestPositions()
-        
-    elseif msg.type == "discover_altars" then
-        findCatalystPedestals()
+    if msg.type == "turtle_id_assigned" then
+        if msg.data.computerId == turtleId then
+            assignedId = msg.data.assignedId
+            chestPosition = msg.data.chestPosition
+            meInterfacePosition = msg.data.meInterfacePosition
+            
+            print("")
+            print("=================================")
+            print("Assigned ID: #" .. assignedId)
+            print("=================================")
+            print("")
+            
+            -- Start altar discovery
+            scanForAltars()
+        end
         
     elseif msg.type == "turtle_tasks" then
-        if msg.data.turtleId == turtleId then
+        if msg.data.turtleId == assignedId then
             tasks = msg.data.tasks
             processTasks()
         end
@@ -545,13 +537,18 @@ local function handleMessage(msg)
     elseif msg.type == "disaster_abort" then
         print("DISASTER ABORT! Stopping all tasks!")
         tasks = {}
+        updateStatus("idle", "aborted")
         returnHome()
     end
 end
 
 -- Main loop
 local function main()
-    print("Thaumcraft Turtle Worker Starting...")
+    print("=================================")
+    print("Thaumcraft Turtle Worker v2.0")
+    print("=================================")
+    
+    turtleId = os.getComputerID()
     print("Computer ID: " .. turtleId)
     
     -- Get home position
@@ -562,20 +559,17 @@ local function main()
     
     print("Home position: " .. textutils.serialize(homePosition))
     
-    -- Check if this is a glove turtle
-    isGloveTurtle = checkGloveChest()
-    
     -- Register with server
     modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_register",
         data = {
             position = homePosition,
-            isGloveTurtle = isGloveTurtle
+            isGloveTurtle = false
         }
     })
     
     print("Registered with server")
-    print("Waiting for tasks...")
+    print("Waiting for ID assignment...")
     
     while true do
         local event, side, channel, replyChannel, message, distance = os.pullEvent("modem_message")
