@@ -437,7 +437,8 @@ local function handleMessage(msg, sender)
                 data = {}
             })
         end
-        
+    end
+    
     elseif msg.type == "chest_positions_found" then
         chestPosition = msg.data.chestPosition
         meInterfacePosition = msg.data.meInterfacePosition
