@@ -19,6 +19,7 @@ local errorMessage = ""
 local scrollOffset = 0
 local statusMessage = ""
 local statusMessageTime = 0
+local setupComplete = false
 
 if not monitor then
     error("No monitor found!")
@@ -135,6 +136,14 @@ local function drawStatusTab()
         y = y + 1
         drawButton(1, y, width, "RESET ERROR", COLOR_ERROR, COLOR_TEXT)
         return
+    end
+    
+    -- Setup status
+    if not setupComplete then
+        drawText(1, y, "SETUP IN PROGRESS", COLOR_BG, colors.orange)
+        y = y + 1
+        drawText(1, y, "Waiting for altar verification...", COLOR_BG, colors.gray)
+        y = y + 2
     end
     
     drawText(1, y, "Recipes: " .. #recipes, COLOR_BG, COLOR_HEADER)
@@ -529,6 +538,7 @@ local function handleMessage(msg)
         activeInfusions = msg.data.activeInfusions or {}
         errorMode = msg.data.errorMode or false
         errorMessage = msg.data.errorMessage or ""
+        setupComplete = msg.data.setupComplete or false
         draw()
         
     elseif msg.type == "chest_contents" then
@@ -543,6 +553,11 @@ local function handleMessage(msg)
     elseif msg.type == "error_cleared" then
         errorMode = false
         errorMessage = ""
+        draw()
+    
+    elseif msg.type == "setup_complete" then
+        setupComplete = true
+        showStatus("Setup complete! " .. (msg.data.altarCount or 0) .. " altars ready")
         draw()
         
     elseif msg.type == "add_recipe_ack" then
