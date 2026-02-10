@@ -437,7 +437,6 @@ local function handleMessage(msg, sender)
                 data = {}
             })
         end
-    end
     
     elseif msg.type == "chest_positions_found" then
         chestPosition = msg.data.chestPosition
@@ -506,6 +505,7 @@ local function handleMessage(msg, sender)
             broadcast("chest_contents", {
                 items = itemList
             })
+    end
     end
 
 -- Main loop
