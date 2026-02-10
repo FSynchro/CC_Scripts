@@ -420,49 +420,50 @@ end
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
     for _, recipe in ipairs(recipes) do
+        local match = true
 
         -- Check catalyst match
         if not itemsMatch(catalyst.item, recipe.catalyst.item, true, true) then
-            goto continue
+            match = false
         end
 
-        if catalyst.matchNBT ~= recipe.catalyst.matchNBT or 
-           catalyst.matchDMG ~= recipe.catalyst.matchDMG then
-            goto continue
+        if match and (catalyst.matchNBT ~= recipe.catalyst.matchNBT or 
+                      catalyst.matchDMG ~= recipe.catalyst.matchDMG) then
+            match = false
         end
 
         -- Check ingredient count
-        if #ingredients ~= #recipe.ingredients then
-            goto continue
+        if match and #ingredients ~= #recipe.ingredients then
+            match = false
         end
 
         -- Check all ingredients match (order doesn't matter)
-        local allMatch = true
-        for _, ing1 in ipairs(ingredients) do
-            local found = false
-            for _, ing2 in ipairs(recipe.ingredients) do
-                if itemsMatch(ing1.item, ing2.item, true, true) and
-                   ing1.matchNBT == ing2.matchNBT and
-                   ing1.matchDMG == ing2.matchDMG then
-                    found = true
+        if match then
+            for _, ing1 in ipairs(ingredients) do
+                local found = false
+                for _, ing2 in ipairs(recipe.ingredients) do
+                    if itemsMatch(ing1.item, ing2.item, true, true) and
+                       ing1.matchNBT == ing2.matchNBT and
+                       ing1.matchDMG == ing2.matchDMG then
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    match = false
                     break
                 end
             end
-            if not found then
-                allMatch = false
-                break
-            end
         end
 
-        if allMatch then
+        if match then
             return true
         end
-
-        ::continue::
     end
 
     return false
 end
+
 
 
 -- Add recipe
