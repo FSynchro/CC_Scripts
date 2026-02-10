@@ -21,6 +21,16 @@ local nextTurtleId = 1
 local pendingMessages = {} -- For ACK/NACK system
 local setupComplete = false
 local potentialAltarBlocks = {} -- Relative positions of mana infused steel blocks
+local scannerEnergy = 100      -- starting energy
+local SCAN_COST = 1700
+local ENERGY_REGEN = 10        -- per second
+local ENERGY_CAPACITY = 200    -- max energy
+local MIN_ENERGY_TO_SCAN = 1700
+local MIN_ENERGY_AFTER_SCAN = 80
+
+
+
+
 
 -- Modem setup
 local modem = peripheral.find("modem")
@@ -60,45 +70,53 @@ local function scanForPeripherals()
         return false
     end
     
-    -- Check energy level
-    local energy = scanner.getEnergy and scanner.getEnergy() or 0
-    scannerEnergy = energy
-    
-    print("Scanner energy: " .. energy)
-    
-    if energy < 1700 then
-        print("ERROR: Scanner needs at least 1700 energy to scan")
-        print("Waiting for energy to recharge (10 energy/tick)...")
-        print("Estimated wait: " .. math.ceil((1700 - energy) / 10 / 20) .. " seconds")
-        
-        -- Wait for energy
-        while scannerEnergy < 1700 do
-            sleep(1)
-            scannerEnergy = scanner.getEnergy and scanner.getEnergy() or 0
-            print("Scanner energy: " .. scannerEnergy .. " / 1700")
-        end
-    end
-    
-    print("Scanning for blocks (costs 1700 energy)...")
-    local blocks = scanner.scan()
-    scanComplete = true
-    
-    print("Scan complete! Found " .. #blocks .. " blocks")
-    print("Waiting for energy recovery...")
-    
-    -- Wait for energy to recover above 0
-    scannerEnergy = scanner.getEnergy and scanner.getEnergy() or -1600
-    while scannerEnergy < 100 do
+-- Wait until scanner has enough simulated energy
+print("Scanner energy: " .. scannerEnergy)
+
+if scannerEnergy < MIN_ENERGY_TO_SCAN then
+    print("Scanner needs at least " .. MIN_ENERGY_TO_SCAN .. " energy to scan")
+    print("Recharging at " .. ENERGY_REGEN .. " energy per second...")
+
+    while scannerEnergy < MIN_ENERGY_TO_SCAN do
         sleep(1)
-        scannerEnergy = scanner.getEnergy and scanner.getEnergy() or 0
-        if scannerEnergy < 0 then
-            print("Energy recovering: " .. scannerEnergy .. " (need to reach 100)")
-        else
-            print("Energy: " .. scannerEnergy .. " / 100")
+        scannerEnergy = scannerEnergy + ENERGY_REGEN
+
+        -- Cap energy at max capacity
+        if scannerEnergy > ENERGY_CAPACITY then
+            scannerEnergy = ENERGY_CAPACITY
         end
+
+        print("Energy: " .. scannerEnergy .. " / " .. MIN_ENERGY_TO_SCAN)
     end
-    
-    print("Energy recovered! Processing scan results...")
+end
+
+print("Scanning for blocks (costs " .. SCAN_COST .. " energy)...")
+
+-- Perform scan
+local blocks = scanner.scan()
+scanComplete = true
+
+-- Deduct energy
+scannerEnergy = scannerEnergy - SCAN_COST
+print("Scan complete! Energy now: " .. scannerEnergy)
+
+print("Waiting for energy recovery...")
+
+-- Recover until at least MIN_ENERGY_AFTER_SCAN
+while scannerEnergy < MIN_ENERGY_AFTER_SCAN do
+    sleep(1)
+    scannerEnergy = scannerEnergy + ENERGY_REGEN
+
+    -- Cap energy at max capacity
+    if scannerEnergy > ENERGY_CAPACITY then
+        scannerEnergy = ENERGY_CAPACITY
+    end
+
+    print("Energy recovering: " .. scannerEnergy .. " / " .. MIN_ENERGY_AFTER_SCAN)
+end
+
+print("Energy recovered! Processing scan results...")
+
     
     local chestFound = false
     local meFound = false
