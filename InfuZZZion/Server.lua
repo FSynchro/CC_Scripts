@@ -36,8 +36,16 @@ local function findPeripherals()
     
     -- Find ME Interface (opposite of computer from chest)
     meInterface = peripheral.wrap("left")
-    if not meInterface or not meInterface.getItem then
+    if not meInterface then
         table.insert(errors, "ME Interface not found on LEFT side (opposite of chest)")
+    else
+        -- Verify it's an ME Interface by checking for AE2 methods
+        -- ME Interfaces have methods like getItemsInNetwork, getCraftingCPUs, etc.
+        local hasAE2Methods = meInterface.getItemsInNetwork or meInterface.getCraftingCPUs or meInterface.getAvailableItems
+        if not hasAE2Methods then
+            table.insert(errors, "Peripheral on LEFT is not an ME Interface (found: " .. peripheral.getType("left") .. ")")
+            meInterface = nil
+        end
     end
     
     return errors
