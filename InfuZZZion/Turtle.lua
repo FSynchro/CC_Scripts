@@ -7,6 +7,9 @@ local PEDESTAL_BLOCK = "Thaumcraft:blockPedestal" -- Adjust based on actual bloc
 -- State
 local modem = peripheral.find("modem")
 local homePosition = nil
+local currentPosition = nil -- Track position without GPS
+local lastGPSCheck = 0
+local GPS_CHECK_INTERVAL = 10 -- Seconds between GPS confirmations
 local tasks = {}
 local turtleId = nil
 local assignedId = nil
@@ -19,13 +22,42 @@ end
 
 modem.open(CHANNEL)
 
--- GPS position
-local function getPosition()
-    local x, y, z = gps.locate(5)
-    if not x then
-        return nil
+-- GPS position with caching
+local function getPosition(forceGPS)
+    local now = os.epoch("utc") / 1000
+    
+    -- Force GPS check or periodic check
+    if forceGPS or not currentPosition or (now - lastGPSCheck) >= GPS_CHECK_INTERVAL then
+        local x, y, z = gps.locate(5)
+        if x then
+            currentPosition = {
+                x = math.floor(x),
+                y = math.floor(y),
+                z = math.floor(z)
+            }
+            lastGPSCheck = now
+            return currentPosition
+        else
+            -- GPS failed, return cached position if available
+            if currentPosition then
+                print("WARNING: GPS failed, using cached position")
+                return currentPosition
+            end
+            return nil
+        end
     end
-    return {x = math.floor(x), y = math.floor(y), z = math.floor(z)}
+    
+    -- Return cached position
+    return currentPosition
+end
+
+-- Update position after movement (no GPS needed)
+local function updatePositionAfterMove(dx, dy, dz)
+    if currentPosition then
+        currentPosition.x = currentPosition.x + dx
+        currentPosition.y = currentPosition.y + dy
+        currentPosition.z = currentPosition.z + dz
+    end
 end
 
 -- Send status update to server
@@ -82,14 +114,14 @@ local function checkFuel()
     return turtle.getFuelLevel() > REFUEL_THRESHOLD
 end
 
--- Movement with fuel check
+-- Movement with fuel check and position tracking
 local function moveTo(target, bypassFuel)
     if not bypassFuel and not checkFuel() then
         print("STALLED: Waiting for fuel...")
         return false
     end
     
-    local current = getPosition()
+    local current = getPosition() -- Only uses GPS if needed
     if not current then return false end
     
     if turtle.getFuelLevel() < 10 then
@@ -101,28 +133,46 @@ local function moveTo(target, bypassFuel)
     local function align(axis, targetCoord)
         local attempts = 0
         while attempts < 4 do
-            local p1 = getPosition()
-            
-            if not turtle.forward() then
-                turtle.dig()
-                if not turtle.forward() then 
-                    return false 
+            -- Test forward movement
+            if turtle.forward() then
+                local moved = false
+                if axis == "x" then
+                    if targetCoord > current.x then
+                        updatePositionAfterMove(1, 0, 0)
+                        current.x = current.x + 1
+                        moved = true
+                    elseif targetCoord < current.x then
+                        updatePositionAfterMove(-1, 0, 0)
+                        current.x = current.x - 1
+                        moved = true
+                    end
+                elseif axis == "z" then
+                    if targetCoord > current.z then
+                        updatePositionAfterMove(0, 0, 1)
+                        current.z = current.z + 1
+                        moved = true
+                    elseif targetCoord < current.z then
+                        updatePositionAfterMove(0, 0, -1)
+                        current.z = current.z - 1
+                        moved = true
+                    end
                 end
+                
+                if moved then
+                    -- We're facing the right direction
+                    turtle.back()
+                    if axis == "x" then
+                        updatePositionAfterMove(current.x > target.x and 1 or -1, 0, 0)
+                        current.x = current.x + (current.x > target.x and 1 or -1)
+                    else
+                        updatePositionAfterMove(0, 0, current.z > target.z and 1 or -1)
+                        current.z = current.z + (current.z > target.z and 1 or -1)
+                    end
+                    return true
+                end
+            else
+                turtle.dig()
             end
-            
-            local p2 = getPosition()
-            turtle.back()
-            
-            local success = false
-            if axis == "x" then
-                if targetCoord > p1.x and p2.x > p1.x then success = true end
-                if targetCoord < p1.x and p2.x < p1.x then success = true end
-            elseif axis == "z" then
-                if targetCoord > p1.z and p2.z > p1.z then success = true end
-                if targetCoord < p1.z and p2.z < p1.z then success = true end
-            end
-            
-            if success then return true end
             
             turtle.turnRight()
             attempts = attempts + 1
@@ -134,23 +184,12 @@ local function moveTo(target, bypassFuel)
     if current.x ~= target.x then
         align("x", target.x)
         while current.x ~= target.x do
-            if current.x < target.x then
-                if not turtle.forward() then
-                    turtle.dig()
-                    if not turtle.forward() then break end
-                end
-                current.x = current.x + 1
-            else
-                turtle.turnRight()
-                turtle.turnRight()
-                if not turtle.forward() then
-                    turtle.dig()
-                    if not turtle.forward() then break end
-                end
-                current.x = current.x - 1
-                turtle.turnRight()
-                turtle.turnRight()
+            if not turtle.forward() then
+                turtle.dig()
+                if not turtle.forward() then break end
             end
+            updatePositionAfterMove(current.x < target.x and 1 or -1, 0, 0)
+            current.x = current.x + (current.x < target.x and 1 or -1)
         end
     end
     
@@ -158,23 +197,12 @@ local function moveTo(target, bypassFuel)
     if current.z ~= target.z then
         align("z", target.z)
         while current.z ~= target.z do
-            if current.z < target.z then
-                if not turtle.forward() then
-                    turtle.dig()
-                    if not turtle.forward() then break end
-                end
-                current.z = current.z + 1
-            else
-                turtle.turnRight()
-                turtle.turnRight()
-                if not turtle.forward() then
-                    turtle.dig()
-                    if not turtle.forward() then break end
-                end
-                current.z = current.z - 1
-                turtle.turnRight()
-                turtle.turnRight()
+            if not turtle.forward() then
+                turtle.dig()
+                if not turtle.forward() then break end
             end
+            updatePositionAfterMove(0, 0, current.z < target.z and 1 or -1)
+            current.z = current.z + (current.z < target.z and 1 or -1)
         end
     end
     
@@ -184,6 +212,7 @@ local function moveTo(target, bypassFuel)
             turtle.digDown()
             if not turtle.down() then break end
         end
+        updatePositionAfterMove(0, -1, 0)
         current.y = current.y - 1
     end
     
@@ -192,6 +221,7 @@ local function moveTo(target, bypassFuel)
             turtle.digUp()
             if not turtle.up() then break end
         end
+        updatePositionAfterMove(0, 1, 0)
         current.y = current.y + 1
     end
     
@@ -215,142 +245,65 @@ local function returnHome()
     end
 end
 
--- Scan for infusion altars
-local function scanForAltars()
-    print("Scanning for infusion altars...")
-    updateStatus("scanning", "detecting infusion pedestals")
+-- Verify potential altar blocks during setup cycle
+local function verifyAltarBlocks(blocksToCheck)
+    print("Verifying " .. #blocksToCheck .. " potential altar blocks...")
+    updateStatus("scanning", "verifying altar blocks")
     
-    local foundAltars = {}
-    local scanRadius = 20
-    local currentPos = getPosition()
+    local confirmedAltars = {}
     
-    if not currentPos then
-        print("ERROR: Cannot get GPS position for scanning")
-        return
-    end
-    
-    local scannedPedestals = {}
-    
-    -- Scan in a grid pattern
-    for dy = -5, 5 do -- Check multiple Y levels
-        for dx = -scanRadius, scanRadius, 2 do
-            for dz = -scanRadius, scanRadius, 2 do
-                local checkPos = {
-                    x = currentPos.x + dx,
-                    y = currentPos.y + dy,
-                    z = currentPos.z + dz
-                }
-                
-                -- Move above position
-                local abovePos = {
-                    x = checkPos.x,
-                    y = checkPos.y + 1,
-                    z = checkPos.z
-                }
-                
-                if moveTo(abovePos) then
-                    local success, block = turtle.inspectDown()
-                    
-                    if success and block.name and block.name:find("edestal") then
-                        -- Found a pedestal
-                        local pedestalPos = {
-                            x = checkPos.x,
-                            y = checkPos.y,
-                            z = checkPos.z
-                        }
-                        
-                        -- Check if already scanned
-                        local alreadyScanned = false
-                        for _, p in ipairs(scannedPedestals) do
-                            if p.x == pedestalPos.x and p.y == pedestalPos.y and p.z == pedestalPos.z then
-                                alreadyScanned = true
-                                break
-                            end
-                        end
-                        
-                        if not alreadyScanned then
-                            table.insert(scannedPedestals, pedestalPos)
-                            print("Found pedestal at " .. textutils.serialize(pedestalPos))
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    -- Group pedestals into altars (7x7 grid, same Y level)
-    print("Grouping pedestals into altars...")
-    local processed = {}
-    
-    for _, pedestal in ipairs(scannedPedestals) do
-        local key = pedestal.x .. "," .. pedestal.y .. "," .. pedestal.z
-        if not processed[key] then
-            -- Try to find altar centered here or nearby
-            local possibleCenters = {
-                {x = pedestal.x, z = pedestal.z},
-                {x = pedestal.x + 4, z = pedestal.z},
-                {x = pedestal.x - 4, z = pedestal.z},
-                {x = pedestal.x, z = pedestal.z + 4},
-                {x = pedestal.x, z = pedestal.z - 4}
-            }
+    for _, block in ipairs(blocksToCheck) do
+        -- Move to position above block
+        local checkPos = {
+            x = block.x,
+            y = block.y + 1,
+            z = block.z
+        }
+        
+        if moveTo(checkPos) then
+            -- Check if there's a pedestal above this block
+            local success, inspectedBlock = turtle.inspectUp()
             
-            for _, center in ipairs(possibleCenters) do
-                local altarPedestals = {}
-                local catalystPos = {x = center.x, y = pedestal.y, z = center.z}
+            if success and inspectedBlock.name and inspectedBlock.name:find("edestal") then
+                print("Confirmed altar catalyst at " .. textutils.serialize(block))
                 
-                -- Check if pedestals exist in 7x7 pattern around center
-                local pattern = {
-                    {x = 0, z = -4}, {x = 0, z = 4},
-                    {x = -4, z = 0}, {x = 4, z = 0},
-                    {x = -4, z = -4}, {x = 4, z = 4},
-                    {x = 4, z = -4}, {x = -4, z = 4}
-                }
+                -- This is a catalyst pedestal, find surrounding pedestals
+                local pedestals = findSurroundingPedestals(block)
                 
-                local found = 0
-                for _, offset in ipairs(pattern) do
-                    local testPos = {
-                        x = catalystPos.x + offset.x,
-                        y = catalystPos.y,
-                        z = catalystPos.z + offset.z
-                    }
-                    
-                    for _, p in ipairs(scannedPedestals) do
-                        if p.x == testPos.x and p.y == testPos.y and p.z == testPos.z then
-                            table.insert(altarPedestals, testPos)
-                            found = found + 1
-                            break
-                        end
-                    end
-                end
-                
-                -- If we found at least 4 pedestals in the pattern, it's likely an altar
-                if found >= 4 then
-                    print("Found altar at " .. textutils.serialize(catalystPos) .. " with " .. found .. " pedestals")
-                    
-                    -- Mark all as processed
-                    for _, p in ipairs(altarPedestals) do
-                        local k = p.x .. "," .. p.y .. "," .. p.z
-                        processed[k] = true
-                    end
+                if #pedestals >= 4 then
+                    table.insert(confirmedAltars, {
+                        catalyst = block,
+                        pedestals = pedestals
+                    })
                     
                     -- Report to server
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "altar_found",
                         data = {
-                            catalystPos = catalystPos,
-                            pedestalPositions = altarPedestals,
+                            catalystPos = block,
+                            pedestalPositions = pedestals,
                             turtleId = assignedId
                         }
                     })
-                    
-                    break
                 end
             end
         end
     end
     
     returnHome()
-    print("Altar scan complete")
+    
+    print("Verification complete! Found " .. #confirmedAltars .. " altars")
+    
+    -- Notify server we're done
+    modem.transmit(CHANNEL, CHANNEL, {
+        type = "setup_verification_complete",
+        data = {
+            turtleId = assignedId,
+            foundAltars = #confirmedAltars
+        }
+    })
+    
+    updateStatus("idle", "waiting")
 end
 
 -- Place item on pedestal
@@ -523,9 +476,12 @@ local function handleMessage(msg)
             print("Assigned ID: #" .. assignedId)
             print("=================================")
             print("")
-            
-            -- Start altar discovery
-            scanForAltars()
+            print("Waiting for setup cycle to begin...")
+        end
+    
+    elseif msg.type == "setup_verify_blocks" then
+        if msg.data.turtleId == assignedId then
+            verifyAltarBlocks(msg.data.blocks)
         end
         
     elseif msg.type == "turtle_tasks" then
@@ -551,13 +507,14 @@ local function main()
     turtleId = os.getComputerID()
     print("Computer ID: " .. turtleId)
     
-    -- Get home position
-    homePosition = getPosition()
+    -- Get home position (force GPS)
+    homePosition = getPosition(true)
     if not homePosition then
         error("ERROR: Cannot get GPS position! Make sure GPS is set up.")
     end
     
     print("Home position: " .. textutils.serialize(homePosition))
+    print("GPS check interval: " .. GPS_CHECK_INTERVAL .. " seconds")
     
     -- Register with server
     modem.transmit(CHANNEL, CHANNEL, {
