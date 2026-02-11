@@ -109,7 +109,6 @@ local function checkFuel()
 end
 
 -- Movement with fuel check and position tracking
--- Improved to travel at safer Y levels
 local function moveTo(target, bypassFuel)
     if not bypassFuel and not checkFuel() then
         print("STALLED: Waiting for fuel...")
@@ -123,14 +122,6 @@ local function moveTo(target, bypassFuel)
         print("ERROR: Out of fuel!")
         return false
     end
-    
-    -- Determine safe travel height
-    -- If going to chest area, approach horizontally first, then descend
-    -- Otherwise, travel at catalyst Y + 2 to avoid hitting computers
-    local safeY = target.y + 2
-    local isChestDestination = chestPosition and 
-                                math.abs(target.x - chestPosition.x) <= 1 and
-                                math.abs(target.z - chestPosition.z) <= 1
     
     -- Direction alignment helper
     local function align(axis, targetCoord)
@@ -181,34 +172,17 @@ local function moveTo(target, bypassFuel)
         return false
     end
     
-    -- Step 1: Rise to safe travel height if needed
-    if isChestDestination then
-        -- For chest, stay at current Y until we're close
-        local distToChest = math.abs(current.x - target.x) + math.abs(current.z - target.z)
-        if distToChest > 2 then
-            -- Travel at safe Y until close
-            while current.y < safeY do
-                if not turtle.up() then
-                    turtle.digUp()
-                    if not turtle.up() then break end
-                end
-                updatePositionAfterMove(0, 1, 0)
-                current.y = current.y + 1
-            end
+    -- Move Y first (rise to target height)
+    while current.y < target.y do
+        if not turtle.up() then
+            turtle.digUp()
+            if not turtle.up() then break end
         end
-    else
-        -- For altars/pedestals, always travel at safe Y
-        while current.y < safeY do
-            if not turtle.up() then
-                turtle.digUp()
-                if not turtle.up() then break end
-            end
-            updatePositionAfterMove(0, 1, 0)
-            current.y = current.y + 1
-        end
+        updatePositionAfterMove(0, 1, 0)
+        current.y = current.y + 1
     end
     
-    -- Step 2: Move X
+    -- Move X
     if current.x ~= target.x then
         align("x", target.x)
         while current.x ~= target.x do
@@ -221,7 +195,7 @@ local function moveTo(target, bypassFuel)
         end
     end
     
-    -- Step 3: Move Z
+    -- Move Z
     if current.z ~= target.z then
         align("z", target.z)
         while current.z ~= target.z do
@@ -234,7 +208,7 @@ local function moveTo(target, bypassFuel)
         end
     end
     
-    -- Step 4: Move Y to target
+    -- Move Y down if needed
     while current.y > target.y do
         if not turtle.down() then
             turtle.digDown()
@@ -242,15 +216,6 @@ local function moveTo(target, bypassFuel)
         end
         updatePositionAfterMove(0, -1, 0)
         current.y = current.y - 1
-    end
-    
-    while current.y < target.y do
-        if not turtle.up() then
-            turtle.digUp()
-            if not turtle.up() then break end
-        end
-        updatePositionAfterMove(0, 1, 0)
-        current.y = current.y + 1
     end
     
     return true
@@ -266,52 +231,73 @@ local function returnHome()
     end
 end
 
--- Scan for pedestals around catalyst
+-- Scan for pedestals around catalyst (7x7 area, 1 block above pedestals)
 local function scanPedestalsAroundCatalyst(catalystPos)
-    print("Scanning for pedestals around catalyst at " .. textutils.serialize(catalystPos))
+    print("Scanning 7x7 area around catalyst at " .. textutils.serialize(catalystPos))
     updateStatus("scanning", "scanning pedestals")
     
     local pedestals = {}
     
-    -- Check positions around the catalyst (5x5 grid, excluding catalyst position)
-    local offsets = {
-        {x = -2, z = 0}, {x = 2, z = 0},   -- Front/back
-        {x = 0, z = -2}, {x = 0, z = 2},   -- Left/right
-        {x = -2, z = -2}, {x = -2, z = 2}, -- Corners
-        {x = 2, z = -2}, {x = 2, z = 2},
-        -- Also check the diagonals at distance 1
-        {x = -1, z = -1}, {x = -1, z = 1},
-        {x = 1, z = -1}, {x = 1, z = 1}
-    }
+    -- Pedestals are at catalystPos.y + 1 (one above the computer)
+    -- We fly at catalystPos.y + 2 (one above the pedestals, so we can inspectDown)
+    local flyingY = catalystPos.y + 2
     
-    for _, offset in ipairs(offsets) do
-        local checkPos = {
-            x = catalystPos.x + offset.x,
-            y = catalystPos.y,
-            z = catalystPos.z + offset.z
-        }
-        
-        -- Move above position
-        local abovePos = {
-            x = checkPos.x,
-            y = checkPos.y + 1,
-            z = checkPos.z
-        }
-        
-        if moveTo(abovePos) then
-            -- Check if there's a pedestal below
-            local success, block = turtle.inspectDown()
-            
-            if success and block.name and block.name:find("edestal") then
-                print("Found pedestal at " .. textutils.serialize(checkPos))
-                table.insert(pedestals, checkPos)
+    print("Flying at Y=" .. flyingY .. " (1 block above pedestals)")
+    
+    -- Scan 7x7 grid centered on catalyst (-3 to +3 in X and Z)
+    for xOffset = -3, 3 do
+        for zOffset = -3, 3 do
+            -- Skip center (that's the catalyst pedestal)
+            if not (xOffset == 0 and zOffset == 0) then
+                local scanPos = {
+                    x = catalystPos.x + xOffset,
+                    y = flyingY,
+                    z = catalystPos.z + zOffset
+                }
+                
+                -- Move to scan position
+                if moveTo(scanPos) then
+                    -- Check what's below us
+                    local success, block = turtle.inspectDown()
+                    
+                    if success and block.name then
+                        -- Check if it's a pedestal
+                        if block.name:find("edestal") then
+                            print("Found pedestal: " .. block.name)
+                            
+                            -- Get exact GPS position
+                            local gpsPos = getPosition(true)
+                            
+                            -- Pedestal is 1 block below us
+                            local pedestalPos = {
+                                x = gpsPos.x,
+                                y = gpsPos.y - 1,
+                                z = gpsPos.z
+                            }
+                            
+                            print("Pedestal GPS: " .. textutils.serialize(pedestalPos))
+                            table.insert(pedestals, pedestalPos)
+                        end
+                    end
+                else
+                    print("WARNING: Could not reach scan position " .. textutils.serialize(scanPos))
+                end
             end
         end
     end
     
-    returnHome()
+    -- Sort pedestals: center first, then corners
+    -- Distance from catalyst determines order
+    table.sort(pedestals, function(a, b)
+        local distA = math.abs(a.x - catalystPos.x) + math.abs(a.z - catalystPos.z)
+        local distB = math.abs(b.x - catalystPos.x) + math.abs(b.z - catalystPos.z)
+        return distA < distB
+    end)
     
     print("Scan complete! Found " .. #pedestals .. " pedestals")
+    print("Sorted by distance: center first, corners last")
+    
+    returnHome()
     return pedestals
 end
 
@@ -366,7 +352,7 @@ local function placeItemOnPedestal(item, position, chestPos)
     print("Picked up item from chest")
     updateStatus("working", "placing on pedestal")
     
-    -- Move to pedestal
+    -- Move to pedestal (position + 1 to be above it)
     local pedestalAbovePos = {
         x = position.x,
         y = position.y + 1,
