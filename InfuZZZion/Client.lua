@@ -1,4 +1,4 @@
--- Thaumcraft Infusion Client v2.0
+-- Thaumcraft Infusion Client v3.0
 -- Monitor interface for recipe programming and status viewing
 
 local CHANNEL = 1742
@@ -142,7 +142,7 @@ local function drawStatusTab()
     if not setupComplete then
         drawText(1, y, "SETUP IN PROGRESS", COLOR_BG, colors.orange)
         y = y + 1
-        drawText(1, y, "Waiting for altar verification...", COLOR_BG, colors.gray)
+        drawText(1, y, "Waiting for pedestal scanning...", COLOR_BG, colors.gray)
         y = y + 2
     end
     
@@ -185,11 +185,11 @@ local function drawStatusTab()
         drawText(1, y, "Active Infusions:", COLOR_BG, COLOR_HEADER)
         y = y + 1
         
-        for altarIdx, infusion in pairs(activeInfusions) do
+        for altarId, infusion in pairs(activeInfusions) do
             local recipe = recipes[infusion.recipeId]
             if recipe then
                 local catalystName = recipe.catalyst.item.displayName or recipe.catalyst.item.name
-                local displayText = "Altar #" .. altarIdx .. ": " .. catalystName:sub(1, width - 15)
+                local displayText = "Altar #" .. altarId .. ": " .. catalystName:sub(1, width - 15)
                 drawText(1, y, displayText, COLOR_BG, COLOR_TEXT)
                 y = y + 1
                 
@@ -394,10 +394,7 @@ local function handleTouch(x, y)
     
     -- Recipes tab
     if currentTab == "recipes" then
-        -- Scrolling
-        if y >= 4 and y < height then
-            -- Click to scroll (future enhancement)
-        end
+        -- Scrolling (future enhancement)
         return
     end
     
@@ -582,7 +579,7 @@ end
 
 -- Main loop
 local function main()
-    print("Thaumcraft Infusion Client v2.0 Starting...")
+    print("Thaumcraft Infusion Client v3.0 Starting...")
     
     clearMonitor()
     drawText(1, math.floor(height / 2), "Connecting to server...", COLOR_BG, COLOR_HEADER)
