@@ -261,6 +261,7 @@ end
 -- Scan for pedestals around catalyst (7x7 area, 1 block above pedestals)
 local function scanPedestalsAroundCatalyst(catalystPos)
     print("Scanning 7x7 area around catalyst at " .. textutils.serialize(catalystPos))
+    print("Current fuel level: " .. turtle.getFuelLevel())
     updateStatus("scanning", "scanning pedestals")
     
     local pedestals = {}
@@ -561,13 +562,16 @@ local function handleMessage(msg)
         end
     
     elseif msg.type == "scan_pedestals" then
-        -- Server wants us to scan pedestals
-        tasks = {{
-            type = "scan_pedestals",
-            altarId = msg.data.altarId,
-            catalystPosition = msg.data.catalystPosition
-        }}
-        processTasks()
+        -- Server wants us to scan pedestals (check if it's for this turtle)
+        if msg.data.turtleId == assignedId then
+            print("Received scan task for altar #" .. msg.data.altarId)
+            tasks = {{
+                type = "scan_pedestals",
+                altarId = msg.data.altarId,
+                catalystPosition = msg.data.catalystPosition
+            }}
+            processTasks()
+        end
         
     elseif msg.type == "turtle_tasks" then
         if msg.data.turtleId == assignedId then
@@ -590,6 +594,11 @@ local function main()
     print("=================================")
     
     print("Computer ID: " .. computerID)
+    print("Fuel level: " .. turtle.getFuelLevel())
+    
+    if turtle.getFuelLevel() < 100 then
+        print("WARNING: Low fuel! Please add coal/charcoal to turtle inventory.")
+    end
     
     -- Try to load saved ID
     local hasSavedId = loadSavedId()
