@@ -244,41 +244,57 @@ local function returnHome()
     end
 end
 
--- Scan for pedestals around catalyst (7x7 area, 1 block above pedestals)
-local function scanPedestalsAroundCatalyst(catalystPos)
-    print("Scanning 7x7 area around catalyst at " .. textutils.serialize(catalystPos))
+-- Scan for pedestals around catalyst (only assigned rows, west to east)
+local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
+    print("Scanning altar at " .. textutils.serialize(catalystPos))
+    print("Assigned rows (Z offsets): " .. textutils.serialize(assignedRows))
     print("Current fuel level: " .. turtle.getFuelLevel())
     updateStatus("scanning", "scanning pedestals")
     
     local pedestals = {}
+    local foundPositions = {}  -- Track positions we've already found pedestals at
     
-    -- Pedestals are at catalystPos.y + 1 (one above the computer)
-    -- We fly at catalystPos.y + 2 (one above the pedestals, so we can inspectDown)
+    -- Flying height: 1 block above pedestals
     local flyingY = catalystPos.y + 2
     
-    print("Flying at Y=" .. flyingY .. " (1 block above pedestals)")
+    print("Flying at Y=" .. flyingY)
     
-    -- Scan 7x7 grid centered on catalyst (-3 to +3 in X and Z)
-    for xOffset = -3, 3 do
-        for zOffset = -3, 3 do
-            -- Skip center (that's the catalyst pedestal)
+    -- Scan assigned rows only, from west to east
+    for _, zOffset in ipairs(assignedRows) do
+        print("Scanning row Z offset: " .. zOffset)
+        
+        -- Scan west to east (X from -3 to +3)
+        for xOffset = -3, 3 do
+            -- Skip center (catalyst pedestal)
             if not (xOffset == 0 and zOffset == 0) then
                 local scanPos = {
                     x = catalystPos.x + xOffset,
-                    y = flyingY,
+                    y = flyingY,  -- ALWAYS at the same Y level
                     z = catalystPos.z + zOffset
                 }
                 
-                -- Move to scan position
+                -- Move to scan position (should stay at same Y)
                 if moveTo(scanPos) then
+                    -- Verify we're at the right Y level
+                    local currentPos = getPosition(false)
+                    if currentPos and currentPos.y ~= flyingY then
+                        print("WARNING: Y drift detected! Moving back to " .. flyingY)
+                        while currentPos.y < flyingY do
+                            turtle.up()
+                            currentPos = getPosition(false)
+                        end
+                        while currentPos.y > flyingY do
+                            turtle.down()
+                            currentPos = getPosition(false)
+                        end
+                    end
+                    
                     -- Check what's below us
                     local success, block = turtle.inspectDown()
                     
                     if success and block.name then
                         -- Check if it's a pedestal
                         if block.name:find("edestal") then
-                            print("Found pedestal: " .. block.name)
-                            
                             -- Get exact GPS position
                             local gpsPos = getPosition(true)
                             
@@ -289,8 +305,17 @@ local function scanPedestalsAroundCatalyst(catalystPos)
                                 z = gpsPos.z
                             }
                             
-                            print("Pedestal GPS: " .. textutils.serialize(pedestalPos))
-                            table.insert(pedestals, pedestalPos)
+                            -- Create unique key for this position
+                            local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
+                            
+                            -- Only add if we haven't found this pedestal yet
+                            if not foundPositions[posKey] then
+                                foundPositions[posKey] = true
+                                print("Found pedestal: " .. block.name .. " at " .. textutils.serialize(pedestalPos))
+                                table.insert(pedestals, pedestalPos)
+                            else
+                                print("Skipping duplicate pedestal at " .. posKey)
+                            end
                         end
                     end
                 else
@@ -300,8 +325,7 @@ local function scanPedestalsAroundCatalyst(catalystPos)
         end
     end
     
-    -- Sort pedestals: center first, then corners
-    -- Distance from catalyst determines order
+    -- Sort pedestals: center first, then corners (by distance from catalyst)
     table.sort(pedestals, function(a, b)
         local distA = math.abs(a.x - catalystPos.x) + math.abs(a.z - catalystPos.z)
         local distB = math.abs(b.x - catalystPos.x) + math.abs(b.z - catalystPos.z)
@@ -475,14 +499,15 @@ local function executeTask(task)
     
     if task.type == "scan_pedestals" then
         updateStatus("scanning", "scanning pedestals")
-        local pedestals = scanPedestalsAroundCatalyst(task.catalystPosition)
+        local pedestals = scanPedestalsAroundCatalyst(task.catalystPosition, task.assignedRows)
         
         -- Report results to server
         modem.transmit(CHANNEL, CHANNEL, {
             type = "pedestals_scanned",
             data = {
                 altarId = task.altarId,
-                pedestalPositions = pedestals
+                pedestalPositions = pedestals,
+                turtleId = assignedId
             }
         })
         return true
@@ -554,7 +579,8 @@ local function handleMessage(msg)
             tasks = {{
                 type = "scan_pedestals",
                 altarId = msg.data.altarId,
-                catalystPosition = msg.data.catalystPosition
+                catalystPosition = msg.data.catalystPosition,
+                assignedRows = msg.data.assignedRows  -- Z offsets to scan
             }}
             processTasks()
         end
