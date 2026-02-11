@@ -559,7 +559,6 @@ local function handleMessage(msg)
             print("")
             print("Ready for tasks...")
         end
-        end
     
     elseif msg.type == "scan_pedestals" then
         -- Server wants us to scan pedestals
