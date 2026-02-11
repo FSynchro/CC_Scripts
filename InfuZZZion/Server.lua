@@ -19,6 +19,9 @@ local errorMessage = ""
 local nextTurtleId = 1
 local nextAltarId = 1
 local setupComplete = false
+local altarLastSeen = {} -- Track last keepalive from altars
+local turtleLastSeen = {} -- Track last keepalive from turtles
+local KEEPALIVE_TIMEOUT = 30000 -- 30 seconds in milliseconds
 
 -- Modem setup
 local modem = peripheral.find("modem")
@@ -93,6 +96,78 @@ local function broadcast(msgType, data)
     })
 end
 
+-- Update turtle status
+local function updateTurtleStatus(turtleId, status, statusDetail)
+    for _, turtle in ipairs(turtles) do
+        if turtle.id == turtleId then
+            turtle.status = status
+            turtle.statusDetail = statusDetail
+            break
+        end
+    end
+end
+
+-- Check for offline components
+local function checkKeepalives()
+    local now = os.epoch("utc")
+    local errors = {}
+    
+    -- Check altars
+    for _, altar in ipairs(altars) do
+        if altarLastSeen[altar.id] then
+            if now - altarLastSeen[altar.id] > KEEPALIVE_TIMEOUT then
+                table.insert(errors, "Altar #" .. altar.id .. " offline!")
+                print("WARNING: Altar #" .. altar.id .. " not responding")
+            end
+        end
+    end
+    
+    -- Check turtles
+    for _, turtle in ipairs(turtles) do
+        if turtleLastSeen[turtle.id] then
+            if now - turtleLastSeen[turtle.id] > KEEPALIVE_TIMEOUT then
+                table.insert(errors, "Turtle #" .. turtle.id .. " offline!")
+                print("WARNING: Turtle #" .. turtle.id .. " not responding")
+            end
+        end
+    end
+    
+    -- Update error mode if components are offline
+    if #errors > 0 then
+        errorMode = true
+        errorMessage = table.concat(errors, ", ")
+        broadcast("error_mode", {message = errorMessage})
+    end
+end
+
+-- Request turtle to scan pedestals around altar
+local function requestPedestalScan(altarId)
+    local altar = nil
+    for _, a in ipairs(altars) do
+        if a.id == altarId then
+            altar = a
+            break
+        end
+    end
+    
+    if not altar then return end
+    
+    -- Assign to first available turtle
+    if #turtles > 0 then
+        print("Requesting pedestal scan for altar #" .. altarId)
+        
+        modem.transmit(turtles[1].computerId, CHANNEL, {
+            type = "scan_pedestals",
+            data = {
+                altarId = altarId,
+                catalystPosition = altar.catalyst
+            }
+        })
+        
+        updateTurtleStatus(turtles[1].id, "scanning", "scanning pedestals")
+    end
+end
+
 -- Register altar from catalyst pedestal computer
 local function registerAltar(catalystPos)
     -- Check if altar already exists at this position
@@ -143,6 +218,9 @@ local function registerAltar(catalystPos)
     print("Registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
     saveDatabase()
     
+    -- Track keepalive
+    altarLastSeen[altarId] = os.epoch("utc")
+    
     -- Send ID assignment
     modem.transmit(CHANNEL, CHANNEL, {
         type = "altar_id_assigned",
@@ -163,34 +241,6 @@ local function registerAltar(catalystPos)
     end
 end
 
--- Request turtle to scan pedestals around altar
-local function requestPedestalScan(altarId)
-    local altar = nil
-    for _, a in ipairs(altars) do
-        if a.id == altarId then
-            altar = a
-            break
-        end
-    end
-    
-    if not altar then return end
-    
-    -- Assign to first available turtle
-    if #turtles > 0 then
-        print("Requesting pedestal scan for altar #" .. altarId)
-        
-        modem.transmit(turtles[1].computerId, CHANNEL, {
-            type = "scan_pedestals",
-            data = {
-                altarId = altarId,
-                catalystPosition = altar.catalyst
-            }
-        })
-        
-        updateTurtleStatus(turtles[1].id, "scanning", "scanning pedestals")
-    end
-end
-
 -- Handle turtle registration
 local function registerTurtle(computerId, position)
     local turtleId = nextTurtleId
@@ -206,6 +256,9 @@ local function registerTurtle(computerId, position)
     })
     
     print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+    
+    -- Track keepalive
+    turtleLastSeen[turtleId] = os.epoch("utc")
     
     -- Send assigned ID back to turtle
     modem.transmit(computerId, CHANNEL, {
@@ -432,17 +485,6 @@ local function findMatchingRecipe()
     return nil
 end
 
--- Update turtle status
-local function updateTurtleStatus(turtleId, status, statusDetail)
-    for _, turtle in ipairs(turtles) do
-        if turtle.id == turtleId then
-            turtle.status = status
-            turtle.statusDetail = statusDetail
-            break
-        end
-    end
-end
-
 -- Assign tasks to turtles for infusion
 local function startInfusion(recipeId, recipe, altarIdx)
     print("Starting infusion for recipe #" .. recipeId .. " on altar #" .. altarIdx)
@@ -664,6 +706,16 @@ local function handleMessage(msg, sender)
                 items = itemList
             })
         end
+    
+    elseif msg.type == "altar_keepalive" then
+        if msg.data.altarId then
+            altarLastSeen[msg.data.altarId] = os.epoch("utc")
+        end
+    
+    elseif msg.type == "turtle_keepalive" then
+        if msg.data.turtleId then
+            turtleLastSeen[msg.data.turtleId] = os.epoch("utc")
+        end
     end
 end
 
@@ -708,6 +760,7 @@ local function main()
     
     -- Main event loop
     local checkTimer = os.startTimer(2)
+    local keepaliveTimer = os.startTimer(10)
     
     while true do
         local event, side, channel, replyChannel, message, distance = os.pullEvent()
@@ -715,22 +768,29 @@ local function main()
         if event == "modem_message" and channel == CHANNEL then
             handleMessage(message, replyChannel)
             
-        elseif event == "timer" and side == checkTimer then
-            -- Check for recipe matches (only after setup is complete)
-            if setupComplete and not errorMode and #turtles >= 1 and #altars > 0 then
-                local recipeId, recipe = findMatchingRecipe()
-                if recipeId then
-                    -- Find available altar
-                    for altarIdx, altar in ipairs(altars) do
-                        if not altar.busy and altar.pedestalsScanned then
-                            startInfusion(recipeId, recipe, altarIdx)
-                            break
+        elseif event == "timer" then
+            if side == checkTimer then
+                -- Check for recipe matches (only after setup is complete)
+                if setupComplete and not errorMode and #turtles >= 1 and #altars > 0 then
+                    local recipeId, recipe = findMatchingRecipe()
+                    if recipeId then
+                        -- Find available altar
+                        for altarIdx, altar in ipairs(altars) do
+                            if not altar.busy and altar.pedestalsScanned then
+                                startInfusion(recipeId, recipe, altarIdx)
+                                break
+                            end
                         end
                     end
                 end
+                
+                checkTimer = os.startTimer(2)
+                
+            elseif side == keepaliveTimer then
+                -- Check keepalives
+                checkKeepalives()
+                keepaliveTimer = os.startTimer(10)
             end
-            
-            checkTimer = os.startTimer(2)
         end
     end
 end
