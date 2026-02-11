@@ -152,21 +152,39 @@ local function requestPedestalScan(altarId)
     
     if not altar then return end
     
-    -- Assign to first available turtle
-    if #turtles > 0 then
-        print("Requesting pedestal scan for altar #" .. altarId)
+    if #turtles == 0 then return end
+    
+    print("Requesting pedestal scan for altar #" .. altarId)
+    print("Distributing rows among " .. #turtles .. " turtle(s)")
+    
+    -- Assign rows to turtles (round-robin)
+    -- 7x7 grid = 7 rows (excluding center row which has catalyst)
+    local rows = {-3, -2, -1, 0, 1, 2, 3}  -- Z offsets from catalyst
+    
+    for turtleIdx, turtle in ipairs(turtles) do
+        local assignedRows = {}
         
-        -- Broadcast on CHANNEL, turtle filters by turtleId
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "scan_pedestals",
-            data = {
-                turtleId = turtles[1].id,
-                altarId = altarId,
-                catalystPosition = altar.catalyst
-            }
-        })
+        -- Assign every Nth row to this turtle (where N = number of turtles)
+        for i = turtleIdx, #rows, #turtles do
+            table.insert(assignedRows, rows[i])
+        end
         
-        updateTurtleStatus(turtles[1].id, "scanning", "scanning pedestals")
+        if #assignedRows > 0 then
+            print("Turtle #" .. turtle.id .. " scanning rows: " .. textutils.serialize(assignedRows))
+            
+            -- Broadcast on CHANNEL, turtle filters by turtleId
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "scan_pedestals",
+                data = {
+                    turtleId = turtle.id,
+                    altarId = altarId,
+                    catalystPosition = altar.catalyst,
+                    assignedRows = assignedRows  -- Z offsets this turtle should scan
+                }
+            })
+            
+            updateTurtleStatus(turtle.id, "scanning", "scanning pedestals")
+        end
     end
 end
 
@@ -341,25 +359,71 @@ local function completeSetup()
 end
 
 -- Handle pedestal scan results
-local function handlePedestalScanResults(altarId, pedestalPositions)
+local function handlePedestalScanResults(altarId, pedestalPositions, turtleId)
     for _, altar in ipairs(altars) do
         if altar.id == altarId then
-            altar.pedestals = pedestalPositions
-            altar.pedestalsScanned = true
-            print("Altar #" .. altarId .. " pedestals scanned: " .. #pedestalPositions .. " pedestals")
-            saveDatabase()
+            -- Initialize pedestals array if needed
+            if not altar.pedestals then
+                altar.pedestals = {}
+            end
             
-            -- Check if all altars are scanned
-            local allScanned = true
-            for _, a in ipairs(altars) do
-                if not a.pedestalsScanned then
-                    allScanned = false
+            -- Merge new pedestals, avoiding duplicates
+            local foundPositions = {}
+            
+            -- Track existing pedestals
+            for _, existing in ipairs(altar.pedestals) do
+                local key = existing.x .. "," .. existing.y .. "," .. existing.z
+                foundPositions[key] = true
+            end
+            
+            -- Add new pedestals if not duplicate
+            local newCount = 0
+            for _, newPed in ipairs(pedestalPositions) do
+                local key = newPed.x .. "," .. newPed.y .. "," .. newPed.z
+                if not foundPositions[key] then
+                    table.insert(altar.pedestals, newPed)
+                    foundPositions[key] = true
+                    newCount = newCount + 1
+                end
+            end
+            
+            print("Turtle #" .. turtleId .. " found " .. #pedestalPositions .. " pedestals (" .. newCount .. " new)")
+            print("Altar #" .. altarId .. " total pedestals: " .. #altar.pedestals)
+            
+            -- Check if all turtles have reported back
+            local allTurtlesDone = true
+            for _, turtle in ipairs(turtles) do
+                if turtle.status == "scanning" then
+                    allTurtlesDone = false
                     break
                 end
             end
             
-            if allScanned and #altars > 0 then
-                completeSetup()
+            -- If all turtles done scanning, finalize the altar
+            if allTurtlesDone then
+                -- Sort pedestals by distance (center first, corners last)
+                table.sort(altar.pedestals, function(a, b)
+                    local distA = math.abs(a.x - altar.catalyst.x) + math.abs(a.z - altar.catalyst.z)
+                    local distB = math.abs(b.x - altar.catalyst.x) + math.abs(b.z - altar.catalyst.z)
+                    return distA < distB
+                end)
+                
+                altar.pedestalsScanned = true
+                print("Altar #" .. altarId .. " scan complete! " .. #altar.pedestals .. " pedestals (sorted by distance)")
+                saveDatabase()
+                
+                -- Check if all altars are scanned
+                local allAltarsScanned = true
+                for _, a in ipairs(altars) do
+                    if not a.pedestalsScanned then
+                        allAltarsScanned = false
+                        break
+                    end
+                end
+                
+                if allAltarsScanned and #altars > 0 then
+                    completeSetup()
+                end
             end
             
             break
@@ -367,23 +431,7 @@ local function handlePedestalScanResults(altarId, pedestalPositions)
     end
 end
 
--- Complete setup
-local function completeSetup()
-    if setupComplete then return end
-    
-    setupComplete = true
-    print("")
-    print("=================================")
-    print("Setup Complete!")
-    print("=================================")
-    print("Altars ready: " .. #altars)
-    print("System ready for infusion!")
-    print("")
-    
-    broadcast("setup_complete", {
-        altarCount = #altars
-    })
-end
+
 
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
@@ -709,7 +757,7 @@ local function handleMessage(msg, sender)
         registerAltar(msg.data.catalystPosition, true, msg.data.altarId)
     
     elseif msg.type == "pedestals_scanned" then
-        handlePedestalScanResults(msg.data.altarId, msg.data.pedestalPositions)
+        handlePedestalScanResults(msg.data.altarId, msg.data.pedestalPositions, msg.data.turtleId)
     
     elseif msg.type == "add_recipe" then
         addRecipe(msg.data.catalyst, msg.data.ingredients)
