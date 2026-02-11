@@ -41,7 +41,6 @@ modem.open(CHANNEL)
 
 -- Scanner setup (Plethora block scanner on left)
 local scanner = peripheral.wrap("left")
-local scannerEnergy = 0
 local scanComplete = false
 
 -- Wrap input chest (to the right)
