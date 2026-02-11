@@ -109,6 +109,7 @@ local function checkFuel()
 end
 
 -- Movement with fuel check and position tracking
+-- Improved to travel at safer Y levels
 local function moveTo(target, bypassFuel)
     if not bypassFuel and not checkFuel() then
         print("STALLED: Waiting for fuel...")
@@ -122,6 +123,14 @@ local function moveTo(target, bypassFuel)
         print("ERROR: Out of fuel!")
         return false
     end
+    
+    -- Determine safe travel height
+    -- If going to chest area, approach horizontally first, then descend
+    -- Otherwise, travel at catalyst Y + 2 to avoid hitting computers
+    local safeY = target.y + 2
+    local isChestDestination = chestPosition and 
+                                math.abs(target.x - chestPosition.x) <= 1 and
+                                math.abs(target.z - chestPosition.z) <= 1
     
     -- Direction alignment helper
     local function align(axis, targetCoord)
@@ -172,7 +181,34 @@ local function moveTo(target, bypassFuel)
         return false
     end
     
-    -- Move X
+    -- Step 1: Rise to safe travel height if needed
+    if isChestDestination then
+        -- For chest, stay at current Y until we're close
+        local distToChest = math.abs(current.x - target.x) + math.abs(current.z - target.z)
+        if distToChest > 2 then
+            -- Travel at safe Y until close
+            while current.y < safeY do
+                if not turtle.up() then
+                    turtle.digUp()
+                    if not turtle.up() then break end
+                end
+                updatePositionAfterMove(0, 1, 0)
+                current.y = current.y + 1
+            end
+        end
+    else
+        -- For altars/pedestals, always travel at safe Y
+        while current.y < safeY do
+            if not turtle.up() then
+                turtle.digUp()
+                if not turtle.up() then break end
+            end
+            updatePositionAfterMove(0, 1, 0)
+            current.y = current.y + 1
+        end
+    end
+    
+    -- Step 2: Move X
     if current.x ~= target.x then
         align("x", target.x)
         while current.x ~= target.x do
@@ -185,7 +221,7 @@ local function moveTo(target, bypassFuel)
         end
     end
     
-    -- Move Z
+    -- Step 3: Move Z
     if current.z ~= target.z then
         align("z", target.z)
         while current.z ~= target.z do
@@ -198,7 +234,7 @@ local function moveTo(target, bypassFuel)
         end
     end
     
-    -- Move Y
+    -- Step 4: Move Y to target
     while current.y > target.y do
         if not turtle.down() then
             turtle.digDown()
@@ -560,11 +596,43 @@ local function main()
     print("Registered with server")
     print("Waiting for ID assignment...")
     
+    -- Start timers
+    local registerTimer = os.startTimer(5)
+    local keepaliveTimer = os.startTimer(10)
+    
     while true do
-        local event, side, channel, replyChannel, message, distance = os.pullEvent("modem_message")
+        local event, side, channel, replyChannel, message, distance = os.pullEvent()
         
-        if channel == CHANNEL then
+        if event == "modem_message" and channel == CHANNEL then
             handleMessage(message)
+            
+        elseif event == "timer" then
+            if side == registerTimer then
+                -- Re-register if we don't have an ID yet
+                if not assignedId then
+                    print("Retrying registration...")
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "turtle_register",
+                        data = {
+                            position = homePosition
+                        }
+                    })
+                end
+                registerTimer = os.startTimer(5)
+                
+            elseif side == keepaliveTimer then
+                -- Send keepalive to server
+                if assignedId then
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "turtle_keepalive",
+                        data = {
+                            turtleId = assignedId,
+                            position = currentPosition or homePosition
+                        }
+                    })
+                end
+                keepaliveTimer = os.startTimer(10)
+            end
         end
     end
 end
