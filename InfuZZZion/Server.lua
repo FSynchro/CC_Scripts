@@ -169,93 +169,127 @@ local function requestPedestalScan(altarId)
 end
 
 -- Register altar from catalyst pedestal computer
-local function registerAltar(catalystPos)
+local function registerAltar(catalystPos, isReregister, existingId)
+    local altarId = existingId or nextAltarId
+    
     -- Check if altar already exists at this position
+    local found = false
     for _, altar in ipairs(altars) do
         if altar.catalyst.x == catalystPos.x and 
            altar.catalyst.y == catalystPos.y and 
            altar.catalyst.z == catalystPos.z then
-            print("Altar already registered at this position")
-            -- Send ID assignment anyway
+            -- Update existing altar
+            altar.id = altarId
+            found = true
+            print("Re-registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
+            
+            -- Track keepalive
+            altarLastSeen[altarId] = os.epoch("utc")
+            
+            -- Send ID assignment
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "altar_id_assigned",
                 data = {
                     catalystPosition = catalystPos,
-                    altarId = altar.id
+                    altarId = altarId
                 }
             })
             return
         end
     end
     
-    local altarId = nextAltarId
-    nextAltarId = nextAltarId + 1
-    
-    local altar = {
-        id = altarId,
-        catalyst = catalystPos,
-        pedestals = {}, -- Will be filled by turtle during setup
-        busy = false,
-        currentRecipe = nil,
-        pedestalsScanned = false
-    }
-    
-    table.insert(altars, altar)
-    
-    -- Sort by distance from server (closer = higher priority)
-    if serverPosition then
-        table.sort(altars, function(a, b)
-            local distA = math.abs(a.catalyst.x - serverPosition.x) + 
-                         math.abs(a.catalyst.y - serverPosition.y) + 
-                         math.abs(a.catalyst.z - serverPosition.z)
-            local distB = math.abs(b.catalyst.x - serverPosition.x) + 
-                         math.abs(b.catalyst.y - serverPosition.y) + 
-                         math.abs(b.catalyst.z - serverPosition.z)
-            return distA < distB
-        end)
-    end
-    
-    print("Registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
-    saveDatabase()
-    
-    -- Track keepalive
-    altarLastSeen[altarId] = os.epoch("utc")
-    
-    -- Send ID assignment
-    modem.transmit(CHANNEL, CHANNEL, {
-        type = "altar_id_assigned",
-        data = {
-            catalystPosition = catalystPos,
-            altarId = altarId
+    -- New altar registration
+    if not found then
+        if not isReregister then
+            nextAltarId = nextAltarId + 1
+        end
+        
+        local altar = {
+            id = altarId,
+            catalyst = catalystPos,
+            pedestals = {}, -- Will be filled by turtle during setup
+            busy = false,
+            currentRecipe = nil,
+            pedestalsScanned = false
         }
-    })
-    
-    broadcast("altar_registered", {
-        altarId = altarId,
-        totalAltars = #altars
-    })
-    
-    -- Request turtle to scan pedestals if we have turtles
-    if #turtles > 0 and not altar.pedestalsScanned then
-        requestPedestalScan(altarId)
+        
+        table.insert(altars, altar)
+        
+        -- Sort by distance from server (closer = higher priority)
+        if serverPosition then
+            table.sort(altars, function(a, b)
+                local distA = math.abs(a.catalyst.x - serverPosition.x) + 
+                             math.abs(a.catalyst.y - serverPosition.y) + 
+                             math.abs(a.catalyst.z - serverPosition.z)
+                local distB = math.abs(b.catalyst.x - serverPosition.x) + 
+                             math.abs(b.catalyst.y - serverPosition.y) + 
+                             math.abs(b.catalyst.z - serverPosition.z)
+                return distA < distB
+            end)
+        end
+        
+        print("Registered NEW altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
+        saveDatabase()
+        
+        -- Track keepalive
+        altarLastSeen[altarId] = os.epoch("utc")
+        
+        -- Send ID assignment
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "altar_id_assigned",
+            data = {
+                catalystPosition = catalystPos,
+                altarId = altarId
+            }
+        })
+        
+        broadcast("altar_registered", {
+            altarId = altarId,
+            totalAltars = #altars
+        })
+        
+        -- Request turtle to scan pedestals if we have turtles
+        if #turtles > 0 and not altar.pedestalsScanned then
+            requestPedestalScan(altarId)
+        end
     end
 end
 
 -- Handle turtle registration
-local function registerTurtle(computerId, position)
-    local turtleId = nextTurtleId
-    nextTurtleId = nextTurtleId + 1
+local function registerTurtle(computerId, position, isReregister, existingId)
+    local turtleId = existingId or nextTurtleId
     
-    table.insert(turtles, {
-        id = turtleId,
-        computerId = computerId,
-        position = position,
-        status = "idle",
-        statusDetail = "waiting",
-        tasks = {}
-    })
+    if not isReregister then
+        nextTurtleId = nextTurtleId + 1
+    end
     
-    print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+    -- Check if turtle already exists (re-registration)
+    local found = false
+    for _, turtle in ipairs(turtles) do
+        if turtle.id == turtleId then
+            -- Update existing turtle
+            turtle.computerId = computerId
+            turtle.position = position
+            turtle.status = "idle"
+            turtle.statusDetail = "waiting"
+            found = true
+            print("Re-registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+            break
+        end
+    end
+    
+    -- Add new turtle if not found
+    if not found then
+        table.insert(turtles, {
+            id = turtleId,
+            computerId = computerId,
+            position = position,
+            status = "idle",
+            statusDetail = "waiting",
+            tasks = {}
+        })
+        print("Registered NEW turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+    end
     
     -- Track keepalive
     turtleLastSeen[turtleId] = os.epoch("utc")
@@ -640,10 +674,18 @@ local function handleMessage(msg, sender)
     if type(msg) ~= "table" or not msg.type then return end
     
     if msg.type == "turtle_register" then
-        registerTurtle(sender, msg.data.position)
+        local computerId = msg.data.computerId or sender
+        registerTurtle(computerId, msg.data.position, false, nil)
+    
+    elseif msg.type == "turtle_reregister" then
+        local computerId = msg.data.computerId or sender
+        registerTurtle(computerId, msg.data.position, true, msg.data.turtleId)
     
     elseif msg.type == "altar_register" then
-        registerAltar(msg.data.catalystPosition)
+        registerAltar(msg.data.catalystPosition, false, nil)
+    
+    elseif msg.type == "altar_reregister" then
+        registerAltar(msg.data.catalystPosition, true, msg.data.altarId)
     
     elseif msg.type == "pedestals_scanned" then
         handlePedestalScanResults(msg.data.altarId, msg.data.pedestalPositions)
