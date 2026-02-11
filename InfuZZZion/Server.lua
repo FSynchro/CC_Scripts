@@ -259,19 +259,16 @@ end
 local function registerTurtle(computerId, position, isReregister, existingId)
     local turtleId = existingId or nextTurtleId
     
-    if not isReregister then
-        nextTurtleId = nextTurtleId + 1
-    end
-    
-    -- Check if turtle already exists (re-registration)
+    -- Check if turtle already exists (by ID or by computerId)
     local found = false
     for _, turtle in ipairs(turtles) do
-        if turtle.id == turtleId then
+        if turtle.id == turtleId or (not isReregister and turtle.computerId == computerId) then
             -- Update existing turtle
             turtle.computerId = computerId
             turtle.position = position
             turtle.status = "idle"
             turtle.statusDetail = "waiting"
+            turtleId = turtle.id  -- Use existing ID
             found = true
             print("Re-registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
             break
@@ -280,6 +277,10 @@ local function registerTurtle(computerId, position, isReregister, existingId)
     
     -- Add new turtle if not found
     if not found then
+        if not isReregister then
+            nextTurtleId = nextTurtleId + 1
+        end
+        
         table.insert(turtles, {
             id = turtleId,
             computerId = computerId,
@@ -294,8 +295,8 @@ local function registerTurtle(computerId, position, isReregister, existingId)
     -- Track keepalive
     turtleLastSeen[turtleId] = os.epoch("utc")
     
-    -- Send assigned ID back to turtle
-    modem.transmit(computerId, CHANNEL, {
+    -- Send assigned ID back to turtle (broadcast on CHANNEL, turtle filters by computerId)
+    modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_id_assigned",
         data = {
             computerId = computerId,
