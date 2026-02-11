@@ -156,9 +156,11 @@ local function requestPedestalScan(altarId)
     if #turtles > 0 then
         print("Requesting pedestal scan for altar #" .. altarId)
         
-        modem.transmit(turtles[1].computerId, CHANNEL, {
+        -- Broadcast on CHANNEL, turtle filters by turtleId
+        modem.transmit(CHANNEL, CHANNEL, {
             type = "scan_pedestals",
             data = {
+                turtleId = turtles[1].id,
                 altarId = altarId,
                 catalystPosition = altar.catalyst
             }
