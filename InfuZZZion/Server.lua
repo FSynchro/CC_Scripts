@@ -241,12 +241,13 @@ local function sendWithAck(msgType, data, targetId)
         lastSent = os.epoch("utc")
     }
     
-    modem.transmit(targetId, CHANNEL, {...})
-        type = msgType,
-        data = data,
-        msgId = msgId,
-        timestamp = os.epoch("utc")
-    })
+modem.transmit(targetId, CHANNEL, {
+    type = msgType,
+    data = data,
+    msgId = msgId,
+    timestamp = os.epoch("utc")
+})
+
     
     return msgId
 end
