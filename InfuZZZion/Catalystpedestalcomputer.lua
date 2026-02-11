@@ -142,8 +142,10 @@ local function main()
     registerAltar()
     print("Waiting for altar ID assignment...")
     
-    -- Start monitoring timer
+    -- Start timers
     local monitorTimer = os.startTimer(1)
+    local registerTimer = os.startTimer(5)
+    local keepaliveTimer = os.startTimer(10)
     
     while true do
         local event, p1, p2, p3, p4, p5 = os.pullEvent()
@@ -151,12 +153,33 @@ local function main()
         if event == "modem_message" and p2 == CHANNEL then
             handleMessage(p4)
             
-        elseif event == "timer" and p1 == monitorTimer then
-            -- Monitor pedestal for changes
-            monitorPedestal()
-            
-            -- Restart timer
-            monitorTimer = os.startTimer(1)
+        elseif event == "timer" then
+            if p1 == monitorTimer then
+                -- Monitor pedestal for changes
+                monitorPedestal()
+                monitorTimer = os.startTimer(1)
+                
+            elseif p1 == registerTimer then
+                -- Re-register if we don't have an ID yet
+                if not altarId then
+                    print("Retrying registration...")
+                    registerAltar()
+                end
+                registerTimer = os.startTimer(5)
+                
+            elseif p1 == keepaliveTimer then
+                -- Send keepalive to server
+                if altarId then
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "altar_keepalive",
+                        data = {
+                            altarId = altarId,
+                            catalystPosition = altarPosition
+                        }
+                    })
+                end
+                keepaliveTimer = os.startTimer(10)
+            end
         end
     end
 end
