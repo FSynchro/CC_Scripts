@@ -1,5 +1,6 @@
--- Thaumcraft Infusion Automation Server
+-- Thaumcraft Infusion Automation Server v3.0
 -- Manages recipes, turtle coordination, and infusion tracking
+-- Uses catalyst pedestal computers instead of scanning
 
 local CHANNEL = 1742
 local DATABASE_FILE = "itemdb.dat"
@@ -8,29 +9,16 @@ local DATABASE_FILE = "itemdb.dat"
 local recipes = {}
 local activeInfusions = {}
 local turtles = {}
-local gloveTurtle = nil
-local altars = {}
+local altars = {} -- Now registered by catalyst pedestal computers
 local inputChest = nil
 local chestPosition = nil
 local meInterfacePosition = nil
 local serverPosition = nil
-local currentRecipe = nil
 local errorMode = false
 local errorMessage = ""
 local nextTurtleId = 1
-local pendingMessages = {} -- For ACK/NACK system
+local nextAltarId = 1
 local setupComplete = false
-local potentialAltarBlocks = {} -- Relative positions of mana infused steel blocks
-local scannerEnergy = 100      -- starting energy
-local SCAN_COST = 1700
-local ENERGY_REGEN = 10        -- per second
-local ENERGY_CAPACITY = 200    -- max energy
-local MIN_ENERGY_TO_SCAN = 1700
-local MIN_ENERGY_AFTER_SCAN = 80
-
-
-
-
 
 -- Modem setup
 local modem = peripheral.find("modem")
@@ -39,11 +27,7 @@ if not modem then
 end
 modem.open(CHANNEL)
 
--- Scanner setup (Plethora block scanner on left)
-local scanner = peripheral.wrap("left")
-local scanComplete = false
-
--- Wrap input chest (to the right)
+-- Wrap peripherals
 inputChest = peripheral.wrap("right")
 
 -- Get server GPS position
@@ -55,136 +39,6 @@ local function getServerPosition()
         return nil
     end
     return {x = math.floor(x), y = math.floor(y), z = math.floor(z)}
-end
-
--- Scan for chest and ME interface using block scanner (EXPENSIVE - only run once!)
-local function scanForPeripherals()
-    if scanComplete then
-        print("Scan already complete, using cached results")
-        return chestPosition ~= nil and meInterfacePosition ~= nil
-    end
-    
-    if not scanner or not scanner.scan then
-        print("ERROR: No block scanner found on left side!")
-        return false
-    end
-    
-print("Scanner energy: " .. scannerEnergy)
-print("Scanning for blocks (costs " .. SCAN_COST .. " energy)...")
-
--- Perform scan immediately
-local blocks = scanner.scan()
-scanComplete = true
-
--- Deduct energy (can go negative)
-scannerEnergy = scannerEnergy - SCAN_COST
--- Count discovered blocks
-local manaBlocks = 0
-local pedestals = 0
-local meInterfaces = 0
-local chests = 0
-
-for _, block in ipairs(blocks) do
-    -- Mana infused metal (Thermal Foundation storage block, meta 8)
-    if block.name == "thermalfoundation:storage" and block.metadata == 8 then
-        manaBlocks = manaBlocks + 1
-    end
-
-    -- Thaumcraft pedestals (adjust name if your modpack uses a variant)
-    if block.name and block.name:find("pedestal") then
-        pedestals = pedestals + 1
-    end
-
-    -- ME Interface
-    if block.name and block.name:find("interface") then
-        meInterfaces = meInterfaces + 1
-    end
-
-    -- Chests
-    if block.name and block.name:find("chest") then
-        chests = chests + 1
-    end
-end
-
-print(
-    "Scan complete! Energy now: " .. scannerEnergy ..
-    " | Found " .. manaBlocks .. " mana blocks, " ..
-    pedestals .. " pedestals, " ..
-    meInterfaces .. " ME interfaces, " ..
-    chests .. " chests"
-)
-
-print("Waiting for energy recovery...")
-
-
--- Recover until at least MIN_ENERGY_AFTER_SCAN
-while scannerEnergy < MIN_ENERGY_AFTER_SCAN do
-    sleep(1)
-    scannerEnergy = scannerEnergy + ENERGY_REGEN
-
-    -- Cap at max capacity
-    if scannerEnergy > ENERGY_CAPACITY then
-        scannerEnergy = ENERGY_CAPACITY
-    end
-
-    print("Energy recovering: " .. scannerEnergy .. " / " .. MIN_ENERGY_AFTER_SCAN)
-end
-
-print("Energy recovered! Processing scan results...")
-
-
-    
-    local chestFound = false
-    local meFound = false
-    local altarBlockCount = 0
-    
-    -- Filter blocks
-    for _, block in ipairs(blocks) do
-        -- Look for chest (should be at relative position right of server)
-        if block.name and block.name:find("chest") and block.x == 1 and block.y == 0 and block.z == 0 then
-            chestPosition = {
-                x = serverPosition.x + block.x,
-                y = serverPosition.y + block.y,
-                z = serverPosition.z + block.z
-            }
-            chestFound = true
-            print("Found chest at: " .. textutils.serialize(chestPosition))
-        end
-        
-        -- Look for ME Interface
-        if block.name and block.name:find("interface") then
-            meInterfacePosition = {
-                x = serverPosition.x + block.x,
-                y = serverPosition.y + block.y,
-                z = serverPosition.z + block.z
-            }
-            meFound = true
-            print("Found ME Interface at: " .. textutils.serialize(meInterfacePosition))
-        end
-        
-        -- Look for mana infused steel blocks (thermalfoundation:storage damage 8)
-        if block.name == "thermalfoundation:storage" and block.metadata == 8 then
-            -- Store relative position
-            table.insert(potentialAltarBlocks, {
-                x = block.x,
-                y = block.y,
-                z = block.z
-            })
-            altarBlockCount = altarBlockCount + 1
-        end
-    end
-    
-    print("Found " .. altarBlockCount .. " potential altar blocks (mana infused steel)")
-    
-    if not chestFound then
-        print("ERROR: Chest not found! Make sure it's on the RIGHT side of server.")
-    end
-    
-    if not meFound then
-        print("ERROR: ME Interface not found! Make sure it's connected to the chest.")
-    end
-    
-    return chestFound and meFound
 end
 
 -- Save database
@@ -207,6 +61,8 @@ local function loadDatabase()
         if data then
             recipes = data.recipes or {}
             altars = data.altars or {}
+            -- Restore nextAltarId
+            nextAltarId = #altars + 1
         end
     end
 end
@@ -228,30 +84,6 @@ local function itemsMatch(item1, item2, matchNBT, matchDMG)
     return true
 end
 
--- Send message with ACK expectation
-local function sendWithAck(msgType, data, targetId)
-    local msgId = os.epoch("utc")
-    
-    pendingMessages[msgId] = {
-        type = msgType,
-        data = data,
-        targetId = targetId,
-        retries = 0,
-        maxRetries = 3,
-        lastSent = os.epoch("utc")
-    }
-    
-modem.transmit(targetId, CHANNEL, {
-    type = msgType,
-    data = data,
-    msgId = msgId,
-    timestamp = os.epoch("utc")
-})
-
-    
-    return msgId
-end
-
 -- Send message to all clients
 local function broadcast(msgType, data)
     modem.transmit(CHANNEL, CHANNEL, {
@@ -261,174 +93,119 @@ local function broadcast(msgType, data)
     })
 end
 
--- Handle ACK
-local function handleAck(msgId, success, reason)
-    if pendingMessages[msgId] then
-        if success then
-            print("ACK received for message " .. msgId)
-            pendingMessages[msgId] = nil
-        else
-            print("NACK received for message " .. msgId .. ": " .. (reason or "unknown"))
-            pendingMessages[msgId] = nil
-        end
-    end
-end
-
--- Retry pending messages
-local function retryPendingMessages()
-    local now = os.epoch("utc")
-    
-    for msgId, msg in pairs(pendingMessages) do
-        if now - msg.lastSent > 2000 then -- 2 second timeout
-            if msg.retries < msg.maxRetries then
-                msg.retries = msg.retries + 1
-                msg.lastSent = now
-                
-                modem.transmit(CHANNEL, CHANNEL, {
-                    type = msg.type,
-                    data = msg.data,
-                    msgId = msgId,
-                    timestamp = now
-                })
-                
-                print("Retrying message " .. msgId .. " (attempt " .. msg.retries .. ")")
-            else
-                print("Message " .. msgId .. " failed after " .. msg.maxRetries .. " retries")
-                pendingMessages[msgId] = nil
-            end
-        end
-    end
-end
-
--- Start setup cycle - send turtles to verify altar block positions
-local function startSetupCycle()
-    if setupComplete then return end
-    
-    print("")
-    print("=================================")
-    print("Starting Setup Cycle")
-    print("=================================")
-    print("Potential altar blocks: " .. #potentialAltarBlocks)
-    print("Available turtles: " .. #turtles)
-    
-    -- Distribute altar blocks to turtles
-    local blocksPerTurtle = math.ceil(#potentialAltarBlocks / #turtles)
-    local blockIdx = 1
-    
-    for turtleIdx, turtle in ipairs(turtles) do
-        local blocksToCheck = {}
-        
-        for i = 1, blocksPerTurtle do
-            if blockIdx <= #potentialAltarBlocks then
-                local relBlock = potentialAltarBlocks[blockIdx]
-                -- Convert relative to absolute GPS coordinates
-                local absBlock = {
-                    x = serverPosition.x + relBlock.x,
-                    y = serverPosition.y + relBlock.y,
-                    z = serverPosition.z + relBlock.z
-                }
-                table.insert(blocksToCheck, absBlock)
-                blockIdx = blockIdx + 1
-            end
-        end
-        
-        if #blocksToCheck > 0 then
-            print("Turtle #" .. turtle.id .. " checking " .. #blocksToCheck .. " blocks")
-            
-            modem.transmit(turtle.computerId, CHANNEL, {
-                type = "setup_verify_blocks",
-                data = {
-                    turtleId = turtle.id,
-                    blocks = blocksToCheck
-                }
-            })
-        end
-    end
-end
-
--- Complete setup cycle
-local function completeSetupCycle()
-    setupComplete = true
-    print("")
-    print("=================================")
-    print("Setup Cycle Complete!")
-    print("=================================")
-    print("Altars found: " .. #altars)
-    print("System ready for infusion!")
-    print("")
-    
-    broadcast("setup_complete", {
-        altarCount = #altars
-    })
-end
-
--- Handle altar discovery response
-local function registerAltar(catalystPos, pedestalPositions, reportedBy)
-    -- Check if altar already exists
+-- Register altar from catalyst pedestal computer
+local function registerAltar(catalystPos)
+    -- Check if altar already exists at this position
     for _, altar in ipairs(altars) do
         if altar.catalyst.x == catalystPos.x and 
            altar.catalyst.y == catalystPos.y and 
            altar.catalyst.z == catalystPos.z then
             print("Altar already registered at this position")
+            -- Send ID assignment anyway
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "altar_id_assigned",
+                data = {
+                    catalystPosition = catalystPos,
+                    altarId = altar.id
+                }
+            })
             return
         end
     end
     
+    local altarId = nextAltarId
+    nextAltarId = nextAltarId + 1
+    
     local altar = {
+        id = altarId,
         catalyst = catalystPos,
-        pedestals = pedestalPositions,
+        pedestals = {}, -- Will be filled by turtle during setup
         busy = false,
-        currentRecipe = nil
+        currentRecipe = nil,
+        pedestalsScanned = false
     }
     
     table.insert(altars, altar)
     
     -- Sort by distance from server (closer = higher priority)
-    table.sort(altars, function(a, b)
-        local distA = math.abs(a.catalyst.x - serverPosition.x) + 
-                     math.abs(a.catalyst.y - serverPosition.y) + 
-                     math.abs(a.catalyst.z - serverPosition.z)
-        local distB = math.abs(b.catalyst.x - serverPosition.x) + 
-                     math.abs(b.catalyst.y - serverPosition.y) + 
-                     math.abs(b.catalyst.z - serverPosition.z)
-        return distA < distB
-    end)
+    if serverPosition then
+        table.sort(altars, function(a, b)
+            local distA = math.abs(a.catalyst.x - serverPosition.x) + 
+                         math.abs(a.catalyst.y - serverPosition.y) + 
+                         math.abs(a.catalyst.z - serverPosition.z)
+            local distB = math.abs(b.catalyst.x - serverPosition.x) + 
+                         math.abs(b.catalyst.y - serverPosition.y) + 
+                         math.abs(b.catalyst.z - serverPosition.z)
+            return distA < distB
+        end)
+    end
     
-    print("Registered altar #" .. #altars .. " at " .. textutils.serialize(catalystPos) .. " (reported by turtle #" .. reportedBy .. ")")
+    print("Registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
     saveDatabase()
     
+    -- Send ID assignment
+    modem.transmit(CHANNEL, CHANNEL, {
+        type = "altar_id_assigned",
+        data = {
+            catalystPosition = catalystPos,
+            altarId = altarId
+        }
+    })
+    
     broadcast("altar_registered", {
-        altarId = #altars,
+        altarId = altarId,
         totalAltars = #altars
     })
+    
+    -- Request turtle to scan pedestals if we have turtles
+    if #turtles > 0 and not altar.pedestalsScanned then
+        requestPedestalScan(altarId)
+    end
+end
+
+-- Request turtle to scan pedestals around altar
+local function requestPedestalScan(altarId)
+    local altar = nil
+    for _, a in ipairs(altars) do
+        if a.id == altarId then
+            altar = a
+            break
+        end
+    end
+    
+    if not altar then return end
+    
+    -- Assign to first available turtle
+    if #turtles > 0 then
+        print("Requesting pedestal scan for altar #" .. altarId)
+        
+        modem.transmit(turtles[1].computerId, CHANNEL, {
+            type = "scan_pedestals",
+            data = {
+                altarId = altarId,
+                catalystPosition = altar.catalyst
+            }
+        })
+        
+        updateTurtleStatus(turtles[1].id, "scanning", "scanning pedestals")
+    end
 end
 
 -- Handle turtle registration
-local function registerTurtle(computerId, position, isGloveTurtle)
+local function registerTurtle(computerId, position)
     local turtleId = nextTurtleId
     nextTurtleId = nextTurtleId + 1
     
-    if isGloveTurtle then
-        gloveTurtle = {
-            id = turtleId,
-            computerId = computerId,
-            position = position,
-            status = "idle",
-            statusDetail = "waiting",
-            tasks = {}
-        }
-        print("Registered glove turtle: #" .. turtleId .. " (Computer " .. computerId .. ")")
-    else
-        table.insert(turtles, {
-            id = turtleId,
-            computerId = computerId,
-            position = position,
-            status = "idle",
-            statusDetail = "waiting",
-            tasks = {}
-        })
-        print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
-    end
+    table.insert(turtles, {
+        id = turtleId,
+        computerId = computerId,
+        position = position,
+        status = "idle",
+        statusDetail = "waiting",
+        tasks = {}
+    })
+    
+    print("Registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
     
     -- Send assigned ID back to turtle
     modem.transmit(computerId, CHANNEL, {
@@ -446,12 +223,59 @@ local function registerTurtle(computerId, position, isGloveTurtle)
         totalTurtles = #turtles
     })
     
-    -- If we have turtles and potential altar blocks, start setup cycle
-    if #turtles > 0 and #potentialAltarBlocks > 0 and not setupComplete then
-        startSetupCycle()
+    -- If we have altars that need pedestal scanning, start
+    for _, altar in ipairs(altars) do
+        if not altar.pedestalsScanned then
+            requestPedestalScan(altar.id)
+            break
+        end
     end
 end
 
+-- Handle pedestal scan results
+local function handlePedestalScanResults(altarId, pedestalPositions)
+    for _, altar in ipairs(altars) do
+        if altar.id == altarId then
+            altar.pedestals = pedestalPositions
+            altar.pedestalsScanned = true
+            print("Altar #" .. altarId .. " pedestals scanned: " .. #pedestalPositions .. " pedestals")
+            saveDatabase()
+            
+            -- Check if all altars are scanned
+            local allScanned = true
+            for _, a in ipairs(altars) do
+                if not a.pedestalsScanned then
+                    allScanned = false
+                    break
+                end
+            end
+            
+            if allScanned and #altars > 0 then
+                completeSetup()
+            end
+            
+            break
+        end
+    end
+end
+
+-- Complete setup
+local function completeSetup()
+    if setupComplete then return end
+    
+    setupComplete = true
+    print("")
+    print("=================================")
+    print("Setup Complete!")
+    print("=================================")
+    print("Altars ready: " .. #altars)
+    print("System ready for infusion!")
+    print("")
+    
+    broadcast("setup_complete", {
+        altarCount = #altars
+    })
+end
 
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
@@ -500,10 +324,8 @@ local function recipeExists(catalyst, ingredients)
     return false
 end
 
-
-
 -- Add recipe
-local function addRecipe(catalyst, ingredients, senderId)
+local function addRecipe(catalyst, ingredients)
     -- Check for duplicate
     if recipeExists(catalyst, ingredients) then
         modem.transmit(CHANNEL, CHANNEL, {
@@ -619,11 +441,6 @@ local function updateTurtleStatus(turtleId, status, statusDetail)
             break
         end
     end
-    
-    if gloveTurtle and gloveTurtle.id == turtleId then
-        gloveTurtle.status = status
-        gloveTurtle.statusDetail = statusDetail
-    end
 end
 
 -- Assign tasks to turtles for infusion
@@ -631,17 +448,24 @@ local function startInfusion(recipeId, recipe, altarIdx)
     print("Starting infusion for recipe #" .. recipeId .. " on altar #" .. altarIdx)
     
     local altar = altars[altarIdx]
+    
+    -- Check if altar has pedestals scanned
+    if not altar.pedestalsScanned or #altar.pedestals == 0 then
+        print("ERROR: Altar #" .. altarIdx .. " pedestals not scanned yet!")
+        return
+    end
+    
     altar.busy = true
     altar.currentRecipe = recipeId
     
     local infusion = {
         recipeId = recipeId,
-        altarIdx = altarIdx,
+        altarId = altar.id,
         startTime = os.epoch("utc"),
         status = "placing_items"
     }
     
-    activeInfusions[altarIdx] = infusion
+    activeInfusions[altar.id] = infusion
     
     -- Assign catalyst to first turtle
     if turtles[1] then
@@ -692,58 +516,17 @@ local function startInfusion(recipeId, recipe, altarIdx)
         end
     end
     
+    -- Notify altar computer
     broadcast("infusion_started", {
         recipeId = recipeId,
-        altarIdx = altarIdx,
+        altarId = altar.id,
         startTime = infusion.startTime
     })
 end
 
--- Monitor infusion progress
-local function monitorInfusions()
-    for altarIdx, infusion in pairs(activeInfusions) do
-        local elapsed = (os.epoch("utc") - infusion.startTime) / 1000
-        local recipe = recipes[infusion.recipeId]
-        
-        -- Check if all turtles are done placing items
-        local allDone = true
-        for _, turtle in ipairs(turtles) do
-            if turtle.status ~= "idle" then
-                allDone = false
-                break
-            end
-        end
-        
-        if allDone and infusion.status == "placing_items" then
-            infusion.status = "infusing"
-            print("All items placed, infusion in progress...")
-            broadcast("infusion_status", {
-                altarIdx = altarIdx,
-                status = "infusing",
-                elapsed = elapsed
-            })
-        end
-        
-        -- Timeout check
-        if recipe.averageTime > 0 and elapsed > recipe.averageTime * 3 then
-            print("DISASTER DETECTED! Infusion taking too long!")
-            errorMode = true
-            errorMessage = "Infusion timeout on altar #" .. altarIdx
-            
-            broadcast("disaster_abort", {
-                altarIdx = altarIdx
-            })
-            
-            broadcast("error_mode", {
-                message = errorMessage
-            })
-        end
-    end
-end
-
 -- Handle infusion completion
-local function completeInfusion(altarIdx)
-    local infusion = activeInfusions[altarIdx]
+local function completeInfusion(altarId, resultItem)
+    local infusion = activeInfusions[altarId]
     if not infusion then return end
     
     local recipe = recipes[infusion.recipeId]
@@ -754,17 +537,40 @@ local function completeInfusion(altarIdx)
     recipe.averageTime = recipe.totalTime / recipe.completedCount
     
     print("Infusion complete! Duration: " .. duration .. "s, Average: " .. recipe.averageTime .. "s")
+    print("Result: " .. resultItem.displayName)
     
-    -- Assign result retrieval
+    -- Find altar
+    local altar = nil
+    for _, a in ipairs(altars) do
+        if a.id == altarId then
+            altar = a
+            break
+        end
+    end
+    
+    if not altar then return end
+    
+    -- Assign result retrieval and pedestal clearing
     if turtles[1] then
+        -- Retrieve catalyst (which is now the result)
         table.insert(turtles[1].tasks, {
             type = "retrieve_result",
-            position = altars[altarIdx].catalyst,
+            position = altar.catalyst,
             meInterfacePosition = meInterfacePosition
         })
-        updateTurtleStatus(turtles[1].id, "working", "retrieving result")
         
-        modem.transmit(CHANNEL, CHANNEL, {
+        -- Clear all pedestals
+        for _, pedestalPos in ipairs(altar.pedestals) do
+            table.insert(turtles[1].tasks, {
+                type = "clear_pedestal",
+                position = pedestalPos,
+                meInterfacePosition = meInterfacePosition
+            })
+        end
+        
+        updateTurtleStatus(turtles[1].id, "working", "clearing altar")
+        
+        modem.transmit(turtles[1].computerId, CHANNEL, {
             type = "turtle_tasks",
             data = {
                 turtleId = turtles[1].id,
@@ -773,9 +579,9 @@ local function completeInfusion(altarIdx)
         })
     end
     
-    altars[altarIdx].busy = false
-    altars[altarIdx].currentRecipe = nil
-    activeInfusions[altarIdx] = nil
+    altar.busy = false
+    altar.currentRecipe = nil
+    activeInfusions[altarId] = nil
     
     saveDatabase()
     
@@ -792,31 +598,16 @@ local function handleMessage(msg, sender)
     if type(msg) ~= "table" or not msg.type then return end
     
     if msg.type == "turtle_register" then
-        registerTurtle(sender, msg.data.position, msg.data.isGloveTurtle or false)
+        registerTurtle(sender, msg.data.position)
     
-    elseif msg.type == "setup_verification_complete" then
-        -- Turtle finished checking its assigned blocks
-        local foundAltars = msg.data.foundAltars or 0
-        print("Turtle #" .. msg.data.turtleId .. " setup complete, found " .. foundAltars .. " altars")
-        
-        -- Check if all turtles finished setup
-        local allDone = true
-        for _, turtle in ipairs(turtles) do
-            if turtle.status ~= "idle" then
-                allDone = false
-                break
-            end
-        end
-        
-        if allDone and not setupComplete then
-            completeSetupCycle()
-        end
+    elseif msg.type == "altar_register" then
+        registerAltar(msg.data.catalystPosition)
     
-    elseif msg.type == "altar_found" then
-        registerAltar(msg.data.catalystPos, msg.data.pedestalPositions, msg.data.turtleId)
+    elseif msg.type == "pedestals_scanned" then
+        handlePedestalScanResults(msg.data.altarId, msg.data.pedestalPositions)
     
     elseif msg.type == "add_recipe" then
-        addRecipe(msg.data.catalyst, msg.data.ingredients, sender)
+        addRecipe(msg.data.catalyst, msg.data.ingredients)
     
     elseif msg.type == "turtle_task_complete" then
         for _, turtle in ipairs(turtles) do
@@ -834,8 +625,8 @@ local function handleMessage(msg, sender)
     elseif msg.type == "turtle_status_update" then
         updateTurtleStatus(msg.data.turtleId, msg.data.status, msg.data.statusDetail)
     
-    elseif msg.type == "infusion_detected" then
-        completeInfusion(msg.data.altarIdx)
+    elseif msg.type == "infusion_complete" then
+        completeInfusion(msg.data.altarId, msg.data.resultItem)
     
     elseif msg.type == "request_status" then
         broadcast("status_update", {
@@ -873,16 +664,13 @@ local function handleMessage(msg, sender)
                 items = itemList
             })
         end
-    
-    elseif msg.type == "ack" or msg.type == "nack" then
-        handleAck(msg.data.msgId, msg.type == "ack", msg.data.reason)
     end
 end
 
 -- Main loop
 local function main()
     print("=================================")
-    print("Thaumcraft Infusion Server v2.0")
+    print("Thaumcraft Infusion Server v3.0")
     print("=================================")
     
     -- Get server position
@@ -893,17 +681,16 @@ local function main()
         print("Server position: " .. textutils.serialize(serverPosition))
     end
     
-    -- Scan for peripherals (EXPENSIVE - only runs once at startup!)
-    print("")
-    print("NOTE: Block scan is expensive (1700 energy)")
-    print("Scan only runs once at startup")
-    print("To rescan (e.g., after adding altars), restart the server")
-    print("")
-    
-    if serverPosition and scanForPeripherals() then
-        print("Peripheral setup complete!")
-    else
-        print("WARNING: Could not complete peripheral scan")
+    -- Set peripheral positions based on server position
+    if serverPosition then
+        chestPosition = {
+            x = serverPosition.x + 1,
+            y = serverPosition.y,
+            z = serverPosition.z
+        }
+        -- ME Interface should be connected to chest (adjust as needed)
+        meInterfacePosition = chestPosition
+        print("Chest position: " .. textutils.serialize(chestPosition))
     end
     
     -- Load database
@@ -917,24 +704,25 @@ local function main()
     end
     
     print("\nServer ready! Listening on channel " .. CHANNEL)
-    print("Waiting for turtles to register...")
+    print("Waiting for catalyst pedestal computers and turtles to register...")
     
     -- Main event loop
+    local checkTimer = os.startTimer(2)
+    
     while true do
         local event, side, channel, replyChannel, message, distance = os.pullEvent()
         
         if event == "modem_message" and channel == CHANNEL then
             handleMessage(message, replyChannel)
-        elseif event == "timer" then
-            -- Retry pending messages
-            retryPendingMessages()
             
+        elseif event == "timer" and side == checkTimer then
             -- Check for recipe matches (only after setup is complete)
             if setupComplete and not errorMode and #turtles >= 1 and #altars > 0 then
                 local recipeId, recipe = findMatchingRecipe()
                 if recipeId then
+                    -- Find available altar
                     for altarIdx, altar in ipairs(altars) do
-                        if not altar.busy then
+                        if not altar.busy and altar.pedestalsScanned then
                             startInfusion(recipeId, recipe, altarIdx)
                             break
                         end
@@ -942,15 +730,9 @@ local function main()
                 end
             end
             
-            -- Monitor active infusions
-            monitorInfusions()
-        end
-        
-        if event == "timer" or event == "modem_message" then
-            os.startTimer(1)
+            checkTimer = os.startTimer(2)
         end
     end
 end
 
-os.startTimer(1)
 main()
