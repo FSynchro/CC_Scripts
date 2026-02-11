@@ -2,6 +2,7 @@
 -- Handles item placement, retrieval, pedestal scanning
 
 local CHANNEL = 1742
+local ID_FILE = "turtle_id.dat"
 
 -- State
 local modem = peripheral.find("modem")
@@ -10,7 +11,7 @@ local currentPosition = nil
 local lastGPSCheck = 0
 local GPS_CHECK_INTERVAL = 10
 local tasks = {}
-local turtleId = nil
+local computerID = os.getComputerID()  -- Get actual computer ID
 local assignedId = nil
 local chestPosition = nil
 local meInterfacePosition = nil
@@ -20,6 +21,32 @@ if not modem then
 end
 
 modem.open(CHANNEL)
+
+-- Load saved ID if exists
+local function loadSavedId()
+    if fs.exists(ID_FILE) then
+        local file = fs.open(ID_FILE, "r")
+        local data = textutils.unserialize(file.readAll())
+        file.close()
+        
+        if data and data.assignedId then
+            assignedId = data.assignedId
+            print("Loaded saved turtle ID: #" .. assignedId)
+            return true
+        end
+    end
+    return false
+end
+
+-- Save assigned ID
+local function saveId()
+    local file = fs.open(ID_FILE, "w")
+    file.write(textutils.serialize({
+        assignedId = assignedId,
+        computerID = computerID
+    }))
+    file.close()
+end
 
 -- GPS position with caching
 local function getPosition(forceGPS)
@@ -517,10 +544,13 @@ local function handleMessage(msg)
     if type(msg) ~= "table" or not msg.type then return end
     
     if msg.type == "turtle_id_assigned" then
-        if msg.data.computerId == turtleId then
+        if msg.data.computerId == computerID then
             assignedId = msg.data.assignedId
             chestPosition = msg.data.chestPosition
             meInterfacePosition = msg.data.meInterfacePosition
+            
+            -- Save the assigned ID
+            saveId()
             
             print("")
             print("=================================")
@@ -528,6 +558,7 @@ local function handleMessage(msg)
             print("=================================")
             print("")
             print("Ready for tasks...")
+        end
         end
     
     elseif msg.type == "scan_pedestals" then
@@ -559,8 +590,10 @@ local function main()
     print("Thaumcraft Turtle Worker v3.0")
     print("=================================")
     
-    turtleId = os.getComputerID()
-    print("Computer ID: " .. turtleId)
+    print("Computer ID: " .. computerID)
+    
+    -- Try to load saved ID
+    local hasSavedId = loadSavedId()
     
     -- Get home position (force GPS)
     homePosition = getPosition(true)
@@ -571,16 +604,29 @@ local function main()
     print("Home position: " .. textutils.serialize(homePosition))
     print("GPS check interval: " .. GPS_CHECK_INTERVAL .. " seconds")
     
-    -- Register with server
-    modem.transmit(CHANNEL, CHANNEL, {
-        type = "turtle_register",
-        data = {
-            position = homePosition
-        }
-    })
+    -- Register with server (or re-register if we have saved ID)
+    if hasSavedId then
+        print("Re-registering with server using saved ID #" .. assignedId)
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "turtle_reregister",
+            data = {
+                turtleId = assignedId,
+                computerId = computerID,
+                position = homePosition
+            }
+        })
+    else
+        print("Registering with server as new turtle")
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "turtle_register",
+            data = {
+                computerId = computerID,
+                position = homePosition
+            }
+        })
+    end
     
-    print("Registered with server")
-    print("Waiting for ID assignment...")
+    print("Waiting for confirmation...")
     
     -- Start timers
     local registerTimer = os.startTimer(5)
@@ -594,13 +640,23 @@ local function main()
             
         elseif event == "timer" then
             if side == registerTimer then
-                -- Re-register if we don't have an ID yet
+                -- Only retry registration if we DON'T have an ID yet
                 if not assignedId then
                     print("Retrying registration...")
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "turtle_register",
                         data = {
+                            computerId = computerID,
                             position = homePosition
+                        }
+                    })
+                else
+                    -- We have an ID, just send keepalive
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "turtle_keepalive",
+                        data = {
+                            turtleId = assignedId,
+                            position = currentPosition or homePosition
                         }
                     })
                 end
