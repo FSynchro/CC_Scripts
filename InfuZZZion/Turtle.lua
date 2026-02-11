@@ -1,15 +1,14 @@
--- Thaumcraft Infusion Turtle Worker v2.0
--- Handles item placement, retrieval, and altar discovery
+-- Thaumcraft Infusion Turtle Worker v3.0
+-- Handles item placement, retrieval, pedestal scanning
 
 local CHANNEL = 1742
-local PEDESTAL_BLOCK = "Thaumcraft:blockPedestal" -- Adjust based on actual block ID
 
 -- State
 local modem = peripheral.find("modem")
 local homePosition = nil
-local currentPosition = nil -- Track position without GPS
+local currentPosition = nil
 local lastGPSCheck = 0
-local GPS_CHECK_INTERVAL = 10 -- Seconds between GPS confirmations
+local GPS_CHECK_INTERVAL = 10
 local tasks = {}
 local turtleId = nil
 local assignedId = nil
@@ -26,7 +25,6 @@ modem.open(CHANNEL)
 local function getPosition(forceGPS)
     local now = os.epoch("utc") / 1000
     
-    -- Force GPS check or periodic check
     if forceGPS or not currentPosition or (now - lastGPSCheck) >= GPS_CHECK_INTERVAL then
         local x, y, z = gps.locate(5)
         if x then
@@ -38,7 +36,6 @@ local function getPosition(forceGPS)
             lastGPSCheck = now
             return currentPosition
         else
-            -- GPS failed, return cached position if available
             if currentPosition then
                 print("WARNING: GPS failed, using cached position")
                 return currentPosition
@@ -47,11 +44,10 @@ local function getPosition(forceGPS)
         end
     end
     
-    -- Return cached position
     return currentPosition
 end
 
--- Update position after movement (no GPS needed)
+-- Update position after movement
 local function updatePositionAfterMove(dx, dy, dz)
     if currentPosition then
         currentPosition.x = currentPosition.x + dx
@@ -77,7 +73,6 @@ local MIN_FUEL = 200
 local REFUEL_THRESHOLD = 50
 
 local function checkFuel()
-    -- Try to refuel from internal inventory first
     if turtle.getFuelLevel() < MIN_FUEL then
         for i = 1, 16 do
             turtle.select(i)
@@ -88,7 +83,6 @@ local function checkFuel()
         end
     end
     
-    -- Critical fuel warning
     if turtle.getFuelLevel() < REFUEL_THRESHOLD then
         if meInterfacePosition then
             print("CRITICAL FUEL: Going to ME Interface for coal...")
@@ -121,7 +115,7 @@ local function moveTo(target, bypassFuel)
         return false
     end
     
-    local current = getPosition() -- Only uses GPS if needed
+    local current = getPosition()
     if not current then return false end
     
     if turtle.getFuelLevel() < 10 then
@@ -133,7 +127,6 @@ local function moveTo(target, bypassFuel)
     local function align(axis, targetCoord)
         local attempts = 0
         while attempts < 4 do
-            -- Test forward movement
             if turtle.forward() then
                 local moved = false
                 if axis == "x" then
@@ -159,7 +152,6 @@ local function moveTo(target, bypassFuel)
                 end
                 
                 if moved then
-                    -- We're facing the right direction
                     turtle.back()
                     if axis == "x" then
                         updatePositionAfterMove(current.x > target.x and 1 or -1, 0, 0)
@@ -235,75 +227,56 @@ local function returnHome()
         updateStatus("returning", "going to home position")
         moveTo(homePosition)
         updateStatus("idle", "waiting")
-        
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "turtle_returned",
-            data = {
-                turtleId = assignedId
-            }
-        })
     end
 end
 
--- Verify potential altar blocks during setup cycle
-local function verifyAltarBlocks(blocksToCheck)
-    print("Verifying " .. #blocksToCheck .. " potential altar blocks...")
-    updateStatus("scanning", "verifying altar blocks")
+-- Scan for pedestals around catalyst
+local function scanPedestalsAroundCatalyst(catalystPos)
+    print("Scanning for pedestals around catalyst at " .. textutils.serialize(catalystPos))
+    updateStatus("scanning", "scanning pedestals")
     
-    local confirmedAltars = {}
+    local pedestals = {}
     
-    for _, block in ipairs(blocksToCheck) do
-        -- Move to position above block
+    -- Check positions around the catalyst (5x5 grid, excluding catalyst position)
+    local offsets = {
+        {x = -2, z = 0}, {x = 2, z = 0},   -- Front/back
+        {x = 0, z = -2}, {x = 0, z = 2},   -- Left/right
+        {x = -2, z = -2}, {x = -2, z = 2}, -- Corners
+        {x = 2, z = -2}, {x = 2, z = 2},
+        -- Also check the diagonals at distance 1
+        {x = -1, z = -1}, {x = -1, z = 1},
+        {x = 1, z = -1}, {x = 1, z = 1}
+    }
+    
+    for _, offset in ipairs(offsets) do
         local checkPos = {
-            x = block.x,
-            y = block.y + 1,
-            z = block.z
+            x = catalystPos.x + offset.x,
+            y = catalystPos.y,
+            z = catalystPos.z + offset.z
         }
         
-        if moveTo(checkPos) then
-            -- Check if there's a pedestal above this block
-            local success, inspectedBlock = turtle.inspectUp()
+        -- Move above position
+        local abovePos = {
+            x = checkPos.x,
+            y = checkPos.y + 1,
+            z = checkPos.z
+        }
+        
+        if moveTo(abovePos) then
+            -- Check if there's a pedestal below
+            local success, block = turtle.inspectDown()
             
-            if success and inspectedBlock.name and inspectedBlock.name:find("edestal") then
-                print("Confirmed altar catalyst at " .. textutils.serialize(block))
-                
-                -- This is a catalyst pedestal, find surrounding pedestals
-                local pedestals = findSurroundingPedestals(block)
-                
-                if #pedestals >= 4 then
-                    table.insert(confirmedAltars, {
-                        catalyst = block,
-                        pedestals = pedestals
-                    })
-                    
-                    -- Report to server
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "altar_found",
-                        data = {
-                            catalystPos = block,
-                            pedestalPositions = pedestals,
-                            turtleId = assignedId
-                        }
-                    })
-                end
+            if success and block.name and block.name:find("edestal") then
+                print("Found pedestal at " .. textutils.serialize(checkPos))
+                table.insert(pedestals, checkPos)
             end
         end
     end
     
     returnHome()
     
-    print("Verification complete! Found " .. #confirmedAltars .. " altars")
-    
-    -- Notify server we're done
-    modem.transmit(CHANNEL, CHANNEL, {
-        type = "setup_verification_complete",
-        data = {
-            turtleId = assignedId,
-            foundAltars = #confirmedAltars
-        }
-    })
-    
-    updateStatus("idle", "waiting")
+    print("Scan complete! Found " .. #pedestals .. " pedestals")
+    return pedestals
 end
 
 -- Place item on pedestal
@@ -422,11 +395,63 @@ local function retrieveItemFromPedestal(position, mePos)
     return true
 end
 
+-- Clear pedestal (retrieve leftover ingredient)
+local function clearPedestal(position, mePos)
+    print("Clearing pedestal at " .. textutils.serialize(position))
+    updateStatus("working", "clearing pedestal")
+    
+    local pedestalAbovePos = {
+        x = position.x,
+        y = position.y + 1,
+        z = position.z
+    }
+    
+    if not moveTo(pedestalAbovePos) then
+        print("ERROR: Cannot move to pedestal")
+        return false
+    end
+    
+    -- Try to suck item
+    if turtle.suckDown(1) then
+        print("Picked up item from pedestal")
+        
+        -- Deposit to ME
+        local meAbovePos = {
+            x = mePos.x,
+            y = mePos.y + 1,
+            z = mePos.z
+        }
+        
+        if moveTo(meAbovePos) then
+            turtle.dropDown(1)
+            print("Item deposited into ME Interface")
+        end
+    else
+        print("No item on pedestal (already cleared)")
+    end
+    
+    return true
+end
+
 -- Execute task
 local function executeTask(task)
     print("Executing task: " .. task.type)
     
-    if task.type == "place_catalyst" then
+    if task.type == "scan_pedestals" then
+        updateStatus("scanning", "scanning pedestals")
+        local pedestals = scanPedestalsAroundCatalyst(task.catalystPosition)
+        
+        -- Report results to server
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "pedestals_scanned",
+            data = {
+                altarId = task.altarId,
+                pedestalPositions = pedestals
+            }
+        })
+        return true
+        
+    elseif task.type == "place_catalyst" then
         updateStatus("working", "placing catalyst")
         return placeItemOnPedestal(task.item, task.position, task.chestPosition)
         
@@ -437,6 +462,10 @@ local function executeTask(task)
     elseif task.type == "retrieve_result" then
         updateStatus("working", "retrieving result")
         return retrieveItemFromPedestal(task.position, task.meInterfacePosition)
+        
+    elseif task.type == "clear_pedestal" then
+        updateStatus("working", "clearing pedestal")
+        return clearPedestal(task.position, task.meInterfacePosition)
     end
     
     return false
@@ -476,13 +505,17 @@ local function handleMessage(msg)
             print("Assigned ID: #" .. assignedId)
             print("=================================")
             print("")
-            print("Waiting for setup cycle to begin...")
+            print("Ready for tasks...")
         end
     
-    elseif msg.type == "setup_verify_blocks" then
-        if msg.data.turtleId == assignedId then
-            verifyAltarBlocks(msg.data.blocks)
-        end
+    elseif msg.type == "scan_pedestals" then
+        -- Server wants us to scan pedestals
+        tasks = {{
+            type = "scan_pedestals",
+            altarId = msg.data.altarId,
+            catalystPosition = msg.data.catalystPosition
+        }}
+        processTasks()
         
     elseif msg.type == "turtle_tasks" then
         if msg.data.turtleId == assignedId then
@@ -501,7 +534,7 @@ end
 -- Main loop
 local function main()
     print("=================================")
-    print("Thaumcraft Turtle Worker v2.0")
+    print("Thaumcraft Turtle Worker v3.0")
     print("=================================")
     
     turtleId = os.getComputerID()
@@ -520,8 +553,7 @@ local function main()
     modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_register",
         data = {
-            position = homePosition,
-            isGloveTurtle = false
+            position = homePosition
         }
     })
     
