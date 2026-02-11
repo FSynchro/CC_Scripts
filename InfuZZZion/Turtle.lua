@@ -31,7 +31,9 @@ local function loadSavedId()
         
         if data and data.assignedId then
             assignedId = data.assignedId
+            facing = data.facing or 0  -- Load facing direction
             print("Loaded saved turtle ID: #" .. assignedId)
+            print("Loaded facing direction: " .. facing)
             return true
         end
     end
@@ -43,7 +45,8 @@ local function saveId()
     local file = fs.open(ID_FILE, "w")
     file.write(textutils.serialize({
         assignedId = assignedId,
-        computerID = computerID
+        computerID = computerID,
+        facing = facing  -- Save facing direction
     }))
     file.close()
 end
@@ -135,6 +138,17 @@ local function checkFuel()
     return turtle.getFuelLevel() > REFUEL_THRESHOLD
 end
 
+-- Turtle facing direction (0=North/Z-, 1=East/X+, 2=South/Z+, 3=West/X-)
+local facing = 0
+
+-- Turn turtle to face a specific direction
+local function turnToFace(targetFacing)
+    while facing ~= targetFacing do
+        turtle.turnRight()
+        facing = (facing + 1) % 4
+    end
+end
+
 -- Movement with fuel check and position tracking
 local function moveTo(target, bypassFuel)
     if not bypassFuel and not checkFuel() then
@@ -150,56 +164,7 @@ local function moveTo(target, bypassFuel)
         return false
     end
     
-    -- Direction alignment helper
-    local function align(axis, targetCoord)
-        local attempts = 0
-        while attempts < 4 do
-            if turtle.forward() then
-                local moved = false
-                if axis == "x" then
-                    if targetCoord > current.x then
-                        updatePositionAfterMove(1, 0, 0)
-                        current.x = current.x + 1
-                        moved = true
-                    elseif targetCoord < current.x then
-                        updatePositionAfterMove(-1, 0, 0)
-                        current.x = current.x - 1
-                        moved = true
-                    end
-                elseif axis == "z" then
-                    if targetCoord > current.z then
-                        updatePositionAfterMove(0, 0, 1)
-                        current.z = current.z + 1
-                        moved = true
-                    elseif targetCoord < current.z then
-                        updatePositionAfterMove(0, 0, -1)
-                        current.z = current.z - 1
-                        moved = true
-                    end
-                end
-                
-                if moved then
-                    turtle.back()
-                    if axis == "x" then
-                        updatePositionAfterMove(current.x > target.x and 1 or -1, 0, 0)
-                        current.x = current.x + (current.x > target.x and 1 or -1)
-                    else
-                        updatePositionAfterMove(0, 0, current.z > target.z and 1 or -1)
-                        current.z = current.z + (current.z > target.z and 1 or -1)
-                    end
-                    return true
-                end
-            else
-                turtle.dig()
-            end
-            
-            turtle.turnRight()
-            attempts = attempts + 1
-        end
-        return false
-    end
-    
-    -- Move Y first (rise to target height)
+    -- Move to target Y first
     while current.y < target.y do
         if not turtle.up() then
             turtle.digUp()
@@ -209,30 +174,50 @@ local function moveTo(target, bypassFuel)
         current.y = current.y + 1
     end
     
-    -- Move X
-    if current.x ~= target.x then
-        align("x", target.x)
-        while current.x ~= target.x do
-            if not turtle.forward() then
-                turtle.dig()
-                if not turtle.forward() then break end
-            end
-            updatePositionAfterMove(current.x < target.x and 1 or -1, 0, 0)
-            current.x = current.x + (current.x < target.x and 1 or -1)
+    -- Move X (East/West)
+    while current.x < target.x do
+        -- Need to go East (+X) = facing 1
+        turnToFace(1)
+        if not turtle.forward() then
+            turtle.dig()
+            if not turtle.forward() then break end
         end
+        updatePositionAfterMove(1, 0, 0)
+        current.x = current.x + 1
     end
     
-    -- Move Z
-    if current.z ~= target.z then
-        align("z", target.z)
-        while current.z ~= target.z do
-            if not turtle.forward() then
-                turtle.dig()
-                if not turtle.forward() then break end
-            end
-            updatePositionAfterMove(0, 0, current.z < target.z and 1 or -1)
-            current.z = current.z + (current.z < target.z and 1 or -1)
+    while current.x > target.x do
+        -- Need to go West (-X) = facing 3
+        turnToFace(3)
+        if not turtle.forward() then
+            turtle.dig()
+            if not turtle.forward() then break end
         end
+        updatePositionAfterMove(-1, 0, 0)
+        current.x = current.x - 1
+    end
+    
+    -- Move Z (South/North)
+    while current.z < target.z do
+        -- Need to go South (+Z) = facing 2
+        turnToFace(2)
+        if not turtle.forward() then
+            turtle.dig()
+            if not turtle.forward() then break end
+        end
+        updatePositionAfterMove(0, 0, 1)
+        current.z = current.z + 1
+    end
+    
+    while current.z > target.z do
+        -- Need to go North (-Z) = facing 0
+        turnToFace(0)
+        if not turtle.forward() then
+            turtle.dig()
+            if not turtle.forward() then break end
+        end
+        updatePositionAfterMove(0, 0, -1)
+        current.z = current.z - 1
     end
     
     -- Move Y down if needed
@@ -254,6 +239,7 @@ local function returnHome()
         print("Returning home...")
         updateStatus("returning", "going to home position")
         moveTo(homePosition)
+        saveId()  -- Save position and facing after returning home
         updateStatus("idle", "waiting")
     end
 end
