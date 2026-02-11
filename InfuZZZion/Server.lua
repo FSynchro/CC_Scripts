@@ -322,6 +322,24 @@ local function registerTurtle(computerId, position, isReregister, existingId)
     end
 end
 
+-- Complete setup
+local function completeSetup()
+    if setupComplete then return end
+    
+    setupComplete = true
+    print("")
+    print("=================================")
+    print("Setup Complete!")
+    print("=================================")
+    print("Altars ready: " .. #altars)
+    print("System ready for infusion!")
+    print("")
+    
+    broadcast("setup_complete", {
+        altarCount = #altars
+    })
+end
+
 -- Handle pedestal scan results
 local function handlePedestalScanResults(altarId, pedestalPositions)
     for _, altar in ipairs(altars) do
