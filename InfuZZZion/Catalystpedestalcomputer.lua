@@ -2,6 +2,7 @@
 -- Monitors the catalyst pedestal for infusion completion
 
 local CHANNEL = 1742
+local ID_FILE = "altar_id.dat"
 
 -- State
 local modem = peripheral.find("modem")
@@ -20,6 +21,32 @@ if not pedestal then
 end
 
 modem.open(CHANNEL)
+
+-- Load saved ID if exists
+local function loadSavedId()
+    if fs.exists(ID_FILE) then
+        local file = fs.open(ID_FILE, "r")
+        local data = textutils.unserialize(file.readAll())
+        file.close()
+        
+        if data and data.altarId then
+            altarId = data.altarId
+            print("Loaded saved altar ID: #" .. altarId)
+            return true
+        end
+    end
+    return false
+end
+
+-- Save assigned ID
+local function saveId()
+    local file = fs.open(ID_FILE, "w")
+    file.write(textutils.serialize({
+        altarId = altarId,
+        altarPosition = altarPosition
+    }))
+    file.close()
+end
 
 -- Get position once at startup
 local function getPosition()
@@ -51,13 +78,26 @@ end
 
 -- Register with server
 local function registerAltar()
-    print("Registering altar with server...")
-    modem.transmit(CHANNEL, CHANNEL, {
-        type = "altar_register",
-        data = {
-            catalystPosition = altarPosition
-        }
-    })
+    if altarId then
+        -- Re-registering with existing ID
+        print("Re-registering altar #" .. altarId .. " with server...")
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "altar_reregister",
+            data = {
+                altarId = altarId,
+                catalystPosition = altarPosition
+            }
+        })
+    else
+        -- New registration
+        print("Registering altar with server...")
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "altar_register",
+            data = {
+                catalystPosition = altarPosition
+            }
+        })
+    end
 end
 
 -- Monitor pedestal for changes
@@ -96,6 +136,10 @@ local function handleMessage(msg)
            msg.data.catalystPosition.y == altarPosition.y and
            msg.data.catalystPosition.z == altarPosition.z then
             altarId = msg.data.altarId
+            
+            -- Save the assigned ID
+            saveId()
+            
             print("")
             print("=================================")
             print("Assigned Altar ID: #" .. altarId)
@@ -130,6 +174,9 @@ local function main()
     altarPosition = getPosition()
     print("Catalyst position: " .. textutils.serialize(altarPosition))
     
+    -- Try to load saved ID
+    local hasSavedId = loadSavedId()
+    
     -- Check pedestal
     local item = getPedestalItem()
     if item then
@@ -138,9 +185,13 @@ local function main()
         print("No item on pedestal")
     end
     
-    -- Register with server
+    -- Register with server (or re-register if we have saved ID)
     registerAltar()
-    print("Waiting for altar ID assignment...")
+    if hasSavedId then
+        print("Re-registering with saved ID #" .. altarId)
+    else
+        print("Waiting for altar ID assignment...")
+    end
     
     -- Start timers
     local monitorTimer = os.startTimer(1)
@@ -160,10 +211,19 @@ local function main()
                 monitorTimer = os.startTimer(1)
                 
             elseif p1 == registerTimer then
-                -- Re-register if we don't have an ID yet
+                -- Only retry registration if we don't have an ID yet
                 if not altarId then
                     print("Retrying registration...")
                     registerAltar()
+                else
+                    -- We have an ID, just send keepalive
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "altar_keepalive",
+                        data = {
+                            altarId = altarId,
+                            catalystPosition = altarPosition
+                        }
+                    })
                 end
                 registerTimer = os.startTimer(5)
                 
