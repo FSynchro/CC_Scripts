@@ -1,15 +1,15 @@
--- Thaumcraft Infusion Client v3.0
--- Monitor interface for recipe programming and status viewing
+-- Thaumcraft Infusion Client v3.1
+-- NEW: Altar layout visualization tab with 7x7 grid display
 
 local CHANNEL = 1742
 
 -- State
 local monitor = peripheral.find("monitor")
 local modem = peripheral.find("modem")
-local currentTab = "status" -- "status", "programming", or "recipes"
+local currentTab = "status" -- "status", "programming", "recipes", or "altars"
 local chestContents = {}
-local selectedItems = {} -- {slot = {type = "catalyst"|"ingredient", matchNBT = bool, matchDMG = bool}}
-local selectionMode = nil -- "catalyst" or "ingredient" (toggleable)
+local selectedItems = {}
+local selectionMode = nil
 local recipes = {}
 local turtles = {}
 local altars = {}
@@ -20,6 +20,7 @@ local scrollOffset = 0
 local statusMessage = ""
 local statusMessageTime = 0
 local setupComplete = false
+local selectedAltarId = nil -- For altar tab
 
 if not monitor then
     error("No monitor found!")
@@ -33,8 +34,8 @@ modem.open(CHANNEL)
 
 -- Monitor dimensions
 local width, height = monitor.getSize()
-monitor.setTextScale(0.5) -- Smaller text
-width, height = monitor.getSize() -- Refresh size after scaling
+monitor.setTextScale(0.5)
+width, height = monitor.getSize()
 
 -- Colors
 local COLOR_BG = colors.black
@@ -46,6 +47,10 @@ local COLOR_CATALYST = colors.yellow
 local COLOR_INGREDIENT = colors.lime
 local COLOR_ERROR = colors.red
 local COLOR_SUCCESS = colors.green
+local COLOR_PEDESTAL = colors.lime
+local COLOR_STABILIZER = colors.lightBlue
+local COLOR_AIR = colors.gray
+local COLOR_PILLAR = colors.orange
 
 -- Clear monitor
 local function clearMonitor()
@@ -75,7 +80,7 @@ end
 
 -- Draw tabs
 local function drawTabs()
-    local tabWidth = math.floor(width / 3)
+    local tabWidth = math.floor(width / 4)
     
     -- Status tab
     local statusColor = currentTab == "status" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
@@ -87,7 +92,11 @@ local function drawTabs()
     
     -- Recipes tab
     local recipeColor = currentTab == "recipes" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
-    drawButton(tabWidth * 2 + 1, 1, width - (tabWidth * 2), "Recipes", recipeColor, COLOR_TEXT)
+    drawButton(tabWidth * 2 + 1, 1, tabWidth, "Recipes", recipeColor, COLOR_TEXT)
+    
+    -- NEW: Altars tab
+    local altarColor = currentTab == "altars" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
+    drawButton(tabWidth * 3 + 1, 1, width - (tabWidth * 3), "Altars", altarColor, COLOR_TEXT)
 end
 
 -- Draw status message
@@ -112,7 +121,6 @@ local function drawStatusTab()
         drawText(1, y, "ERROR MODE", COLOR_BG, COLOR_ERROR)
         y = y + 1
         
-        -- Word wrap error message
         local words = {}
         for word in errorMessage:gmatch("%S+") do
             table.insert(words, word)
@@ -138,7 +146,6 @@ local function drawStatusTab()
         return
     end
     
-    -- Setup status
     if not setupComplete then
         drawText(1, y, "SETUP IN PROGRESS", COLOR_BG, colors.orange)
         y = y + 1
@@ -159,7 +166,6 @@ local function drawStatusTab()
     drawText(width - 15, y, "Active: " .. infusionCount, COLOR_BG, COLOR_HEADER)
     y = y + 2
     
-    -- Show turtle status
     if #turtles > 0 then
         drawText(1, y, "Turtle Status:", COLOR_BG, COLOR_HEADER)
         y = y + 1
@@ -180,7 +186,6 @@ local function drawStatusTab()
         y = y + 1
     end
     
-    -- Show active infusions
     if infusionCount > 0 then
         drawText(1, y, "Active Infusions:", COLOR_BG, COLOR_HEADER)
         y = y + 1
@@ -193,7 +198,6 @@ local function drawStatusTab()
                 drawText(1, y, displayText, COLOR_BG, COLOR_TEXT)
                 y = y + 1
                 
-                -- Progress bar
                 local elapsed = (os.epoch("utc") - infusion.startTime) / 1000
                 local expected = recipe.averageTime > 0 and recipe.averageTime or 60
                 local progress = math.min(elapsed / expected, 1)
@@ -231,13 +235,11 @@ local function drawProgrammingTab()
         return
     end
     
-    -- Draw item list
     local maxVisible = height - y - 3
     for i = 1, math.min(#chestContents, maxVisible) do
         local item = chestContents[i]
         local selection = selectedItems[item.slot]
         
-        -- Item name
         local displayName = (item.displayName or item.name):sub(1, width - 12)
         local itemColor = COLOR_TEXT
         local itemBg = COLOR_BG
@@ -250,7 +252,6 @@ local function drawProgrammingTab()
             end
         end
         
-        -- Build suffix for NBT/DMG flags
         local suffix = ""
         if selection then
             if not selection.matchNBT and not selection.matchDMG then
@@ -266,10 +267,8 @@ local function drawProgrammingTab()
         y = y + 1
     end
     
-    -- Draw buttons
     y = height - 2
     
-    -- Selection mode buttons
     local catColor = selectionMode == "catalyst" and COLOR_CATALYST or COLOR_BUTTON
     local ingColor = selectionMode == "ingredient" and COLOR_INGREDIENT or COLOR_BUTTON
     
@@ -279,7 +278,6 @@ local function drawProgrammingTab()
     
     y = height - 1
     
-    -- Count selections
     local catalystCount = 0
     local ingredientCount = 0
     for _, sel in pairs(selectedItems) do
@@ -314,25 +312,21 @@ local function drawRecipesTab()
     for i = startIdx, endIdx do
         local recipe = recipes[i]
         
-        -- Recipe header
         local catalystName = recipe.catalyst.item.displayName or recipe.catalyst.item.name
         local headerText = "#" .. i .. " " .. catalystName:sub(1, width - 10)
         drawText(1, y, headerText, COLOR_BG, COLOR_HEADER)
         y = y + 1
         
-        -- Recipe stats
         if recipe.completedCount > 0 then
             local stats = "  Done: " .. recipe.completedCount .. "x, Avg: " .. math.floor(recipe.averageTime) .. "s"
             drawText(1, y, stats, COLOR_BG, colors.gray)
             y = y + 1
         end
         
-        -- Ingredients
         local ingText = "  Ingredients: " .. #recipe.ingredients
         drawText(1, y, ingText, COLOR_BG, colors.gray)
         y = y + 1
         
-        -- Spacing
         if i < endIdx then
             y = y + 1
         end
@@ -340,10 +334,131 @@ local function drawRecipesTab()
         if y >= height then break end
     end
     
-    -- Scroll indicator
     if #recipes > maxVisible then
         local scrollText = "Scroll: " .. (scrollOffset + 1) .. "-" .. endIdx .. " of " .. #recipes
         drawText(width - #scrollText, height, scrollText, COLOR_BG, colors.gray)
+    end
+end
+
+-- NEW: Draw altars tab
+local function drawAltarsTab()
+    local y = 3
+    
+    if #altars == 0 then
+        drawText(1, y, "No altars registered", COLOR_BG, colors.gray)
+        return
+    end
+    
+    -- Left side: Altar list (1/3 of screen)
+    local listWidth = math.floor(width / 3)
+    
+    drawText(1, y, "Altars:", COLOR_BG, COLOR_HEADER)
+    y = y + 1
+    
+    -- Draw altar list
+    for _, altar in ipairs(altars) do
+        local listColor = (selectedAltarId == altar.id) and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
+        local statusIcon = altar.pedestalsScanned and "[OK]" or "[..]"
+        local altarText = "#" .. altar.id .. " " .. statusIcon
+        
+        if altar.busy then
+            altarText = altarText .. " BUSY"
+        end
+        
+        drawButton(1, y, listWidth, altarText:sub(1, listWidth), listColor, COLOR_TEXT)
+        y = y + 1
+        
+        if y >= height - 1 then break end
+    end
+    
+    -- Right side: 7x7 Grid visualization
+    if selectedAltarId then
+        local selectedAltar = nil
+        for _, altar in ipairs(altars) do
+            if altar.id == selectedAltarId then
+                selectedAltar = altar
+                break
+            end
+        end
+        
+        if selectedAltar then
+            local gridX = listWidth + 3
+            local gridY = 3
+            
+            -- Title
+            drawText(gridX, gridY, "Altar #" .. selectedAltarId .. " Layout", COLOR_BG, COLOR_HEADER)
+            gridY = gridY + 2
+            
+            -- Legend
+            drawText(gridX, gridY, "G=Air B=Stab P=Ped O=Pillar", COLOR_BG, colors.gray)
+            gridY = gridY + 2
+            
+            -- Create position lookup maps
+            local pedestalMap = {}
+            local stabilizerMap = {}
+            
+            if selectedAltar.pedestals then
+                for _, pos in ipairs(selectedAltar.pedestals) do
+                    local xOffset = pos.x - selectedAltar.catalyst.x
+                    local zOffset = pos.z - selectedAltar.catalyst.z
+                    local key = xOffset .. "," .. zOffset
+                    pedestalMap[key] = true
+                end
+            end
+            
+            if selectedAltar.stabilizers then
+                for _, pos in ipairs(selectedAltar.stabilizers) do
+                    local xOffset = pos.x - selectedAltar.catalyst.x
+                    local zOffset = pos.z - selectedAltar.catalyst.z
+                    local key = xOffset .. "," .. zOffset
+                    stabilizerMap[key] = true
+                end
+            end
+            
+            -- Draw 7x7 grid (Z=-3 to Z=3, X=-3 to X=3)
+            for z = -3, 3 do
+                for x = -3, 3 do
+                    local posKey = x .. "," .. z
+                    local symbol = "G" -- Air/Gray by default
+                    local symbolColor = COLOR_AIR
+                    
+                    -- Check if this is the catalyst center
+                    if x == 0 and z == 0 then
+                        symbol = "C"
+                        symbolColor = COLOR_CATALYST
+                    
+                    -- Check for infusion pillars (corners)
+                    elseif (x == -2 and z == -2) or (x == -2 and z == 2) or 
+                           (x == 2 and z == -2) or (x == 2 and z == 2) then
+                        symbol = "O"
+                        symbolColor = COLOR_PILLAR
+                    
+                    -- Check if pedestal
+                    elseif pedestalMap[posKey] then
+                        symbol = "P"
+                        symbolColor = COLOR_PEDESTAL
+                    
+                    -- Check if stabilizer
+                    elseif stabilizerMap[posKey] then
+                        symbol = "B"
+                        symbolColor = COLOR_STABILIZER
+                    end
+                    
+                    -- Draw the symbol
+                    drawText(gridX + x + 3, gridY + z + 3, symbol, COLOR_BG, symbolColor)
+                end
+            end
+            
+            -- Stats below grid
+            local statsY = gridY + 11
+            drawText(gridX, statsY, "Pedestals: " .. #(selectedAltar.pedestals or {}), COLOR_BG, COLOR_TEXT)
+            statsY = statsY + 1
+            drawText(gridX, statsY, "Stabilizers: " .. #(selectedAltar.stabilizers or {}), COLOR_BG, COLOR_TEXT)
+        end
+    else
+        -- No altar selected, show instructions
+        drawText(listWidth + 3, 5, "Select an altar from the list", COLOR_BG, colors.gray)
+        drawText(listWidth + 3, 6, "to view its layout", COLOR_BG, colors.gray)
     end
 end
 
@@ -358,6 +473,8 @@ local function draw()
         drawProgrammingTab()
     elseif currentTab == "recipes" then
         drawRecipesTab()
+    elseif currentTab == "altars" then
+        drawAltarsTab()
     end
     
     drawStatusMessage()
@@ -365,7 +482,7 @@ end
 
 -- Handle touch
 local function handleTouch(x, y)
-    local tabWidth = math.floor(width / 3)
+    local tabWidth = math.floor(width / 4)
     
     -- Tab switching
     if y == 1 then
@@ -373,8 +490,13 @@ local function handleTouch(x, y)
             currentTab = "status"
         elseif x <= tabWidth * 2 then
             currentTab = "programming"
-        else
+        elseif x <= tabWidth * 3 then
             currentTab = "recipes"
+        else
+            currentTab = "altars"
+            if not selectedAltarId and #altars > 0 then
+                selectedAltarId = altars[1].id
+            end
         end
         scrollOffset = 0
         draw()
@@ -394,13 +516,26 @@ local function handleTouch(x, y)
     
     -- Recipes tab
     if currentTab == "recipes" then
-        -- Scrolling (future enhancement)
+        return
+    end
+    
+    -- NEW: Altars tab
+    if currentTab == "altars" then
+        local listWidth = math.floor(width / 3)
+        
+        -- Check if clicking on altar list
+        if x <= listWidth and y >= 4 then
+            local altarIdx = y - 3
+            if altarIdx >= 1 and altarIdx <= #altars then
+                selectedAltarId = altars[altarIdx].id
+                draw()
+            end
+        end
         return
     end
     
     -- Programming tab
     if currentTab == "programming" then
-        -- Item selection
         if y >= 4 and y < height - 2 then
             local itemIdx = y - 3
             if itemIdx <= #chestContents then
@@ -412,12 +547,10 @@ local function handleTouch(x, y)
                     return
                 end
                 
-                -- Toggle selection
                 if selectedItems[item.slot] and selectedItems[item.slot].type == selectionMode then
                     selectedItems[item.slot] = nil
                 else
                     if selectionMode == "catalyst" then
-                        -- Only allow one catalyst
                         local catalystCount = 0
                         for _, sel in pairs(selectedItems) do
                             if sel.type == "catalyst" then
@@ -441,18 +574,14 @@ local function handleTouch(x, y)
             end
         end
         
-        -- Button row 1
         if y == height - 2 then
             if x <= math.floor(width / 3) then
-                -- Catalyst button (toggle)
                 selectionMode = (selectionMode == "catalyst") and nil or "catalyst"
                 
             elseif x <= math.floor(width / 3) * 2 then
-                -- Ingredient button (toggle)
                 selectionMode = (selectionMode == "ingredient") and nil or "ingredient"
                 
             else
-                -- NBT/DMG toggle on last selected item
                 local lastSlot = nil
                 for slot, _ in pairs(selectedItems) do
                     lastSlot = slot
@@ -472,7 +601,6 @@ local function handleTouch(x, y)
             end
         end
         
-        -- ADD button
         if y == height - 1 then
             local catalyst = nil
             local ingredients = {}
@@ -536,6 +664,12 @@ local function handleMessage(msg)
         errorMode = msg.data.errorMode or false
         errorMessage = msg.data.errorMessage or ""
         setupComplete = msg.data.setupComplete or false
+        
+        -- Auto-select first altar if none selected
+        if currentTab == "altars" and not selectedAltarId and #altars > 0 then
+            selectedAltarId = altars[1].id
+        end
+        
         draw()
         
     elseif msg.type == "chest_contents" then
@@ -569,7 +703,6 @@ local function handleMessage(msg)
         
     elseif msg.type == "recipe_added" or msg.type == "infusion_started" or 
            msg.type == "infusion_complete" or msg.type == "altar_registered" then
-        -- Request status update
         modem.transmit(CHANNEL, CHANNEL, {
             type = "request_status",
             data = {}
@@ -579,18 +712,16 @@ end
 
 -- Main loop
 local function main()
-    print("Thaumcraft Infusion Client v3.0 Starting...")
+    print("Thaumcraft Infusion Client v3.1 Starting...")
     
     clearMonitor()
     drawText(1, math.floor(height / 2), "Connecting to server...", COLOR_BG, COLOR_HEADER)
     
-    -- Request initial status
     modem.transmit(CHANNEL, CHANNEL, {
         type = "request_status",
         data = {}
     })
     
-    -- Request chest contents
     modem.transmit(CHANNEL, CHANNEL, {
         type = "request_chest_contents",
         data = {}
@@ -610,7 +741,6 @@ local function main()
             handleMessage(p4)
             
         elseif event == "timer" and p1 == updateTimer then
-            -- Periodic status update
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "request_status",
                 data = {}
@@ -623,7 +753,6 @@ local function main()
                 })
             end
             
-            -- Redraw to update progress bars and clear old status messages
             draw()
             
             updateTimer = os.startTimer(2)
