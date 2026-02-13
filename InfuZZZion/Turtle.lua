@@ -1,8 +1,11 @@
--- Thaumcraft Infusion Turtle Worker v3.1
--- FIXED: Now detects stabilizers (heads/candles/skulls) in addition to pedestals
+-- Thaumcraft Infusion Turtle Worker v3.2
+-- REDESIGNED: Slow, methodical scanning with GPS verification
 
 local CHANNEL = 1742
 local ID_FILE = "turtle_id.dat"
+local SCAN_DELAY = 0.5 -- Delay between each scan position (seconds)
+local MOVE_DELAY = 0.3 -- Delay after each movement
+local GPS_VERIFY_RETRIES = 3 -- Times to retry GPS at each position
 
 -- State
 local modem = peripheral.find("modem")
@@ -15,7 +18,7 @@ local computerID = os.getComputerID()
 local assignedId = nil
 local chestPosition = nil
 local meInterfacePosition = nil
-local facing = 0 -- Direction turtle is facing
+local facing = 0
 
 if not modem then
     error("No wireless modem found! Please attach an ender modem.")
@@ -23,7 +26,7 @@ end
 
 modem.open(CHANNEL)
 
--- Load saved ID if exists
+-- Load saved ID
 local function loadSavedId()
     if fs.exists(ID_FILE) then
         local file = fs.open(ID_FILE, "r")
@@ -34,7 +37,6 @@ local function loadSavedId()
             assignedId = data.assignedId
             facing = data.facing or 0
             print("Loaded saved turtle ID: #" .. assignedId)
-            print("Loaded facing direction: " .. facing)
             return true
         end
     end
@@ -52,27 +54,36 @@ local function saveId()
     file.close()
 end
 
--- GPS position with caching
+-- GPS position with retries
 local function getPosition(forceGPS)
     local now = os.epoch("utc") / 1000
     
     if forceGPS or not currentPosition or (now - lastGPSCheck) >= GPS_CHECK_INTERVAL then
-        local x, y, z = gps.locate(5)
-        if x then
-            currentPosition = {
-                x = math.floor(x),
-                y = math.floor(y),
-                z = math.floor(z)
-            }
-            lastGPSCheck = now
-            return currentPosition
-        else
-            if currentPosition then
-                print("WARNING: GPS failed, using cached position")
+        -- Try multiple times
+        for attempt = 1, GPS_VERIFY_RETRIES do
+            local x, y, z = gps.locate(5)
+            if x then
+                currentPosition = {
+                    x = math.floor(x),
+                    y = math.floor(y),
+                    z = math.floor(z)
+                }
+                lastGPSCheck = now
                 return currentPosition
             end
-            return nil
+            
+            if attempt < GPS_VERIFY_RETRIES then
+                print("GPS attempt " .. attempt .. " failed, retrying...")
+                sleep(0.5)
+            end
         end
+        
+        -- All attempts failed
+        if currentPosition then
+            print("WARNING: GPS failed after " .. GPS_VERIFY_RETRIES .. " attempts, using cached position")
+            return currentPosition
+        end
+        return nil
     end
     
     return currentPosition
@@ -87,7 +98,7 @@ local function updatePositionAfterMove(dx, dy, dz)
     end
 end
 
--- Send status update to server
+-- Send status update
 local function updateStatus(status, statusDetail)
     modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_status_update",
@@ -99,146 +110,185 @@ local function updateStatus(status, statusDetail)
     })
 end
 
--- Fuel management
+-- Send keepalive
+local function sendKeepalive()
+    if assignedId then
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "turtle_keepalive",
+            data = {
+                turtleId = assignedId,
+                position = currentPosition or homePosition
+            }
+        })
+    end
+end
+
+-- Fuel check
 local MIN_FUEL = 200
 local REFUEL_THRESHOLD = 50
 
 local function checkFuel()
-    if turtle.getFuelLevel() < MIN_FUEL then
-        for i = 1, 16 do
-            turtle.select(i)
-            if turtle.refuel(0) then
-                turtle.refuel()
-                print("Refueled! Current level: " .. turtle.getFuelLevel())
-            end
-        end
-    end
-    
     if turtle.getFuelLevel() < REFUEL_THRESHOLD then
-        if meInterfacePosition then
-            print("CRITICAL FUEL: Going to ME Interface for coal...")
-            updateStatus("refueling", "critical fuel level")
-            
-            local target = {
-                x = meInterfacePosition.x,
-                y = meInterfacePosition.y + 1,
-                z = meInterfacePosition.z
-            }
-            
-            if moveTo(target, true) then
-                turtle.suckDown(16)
-                turtle.refuel()
-                print("Emergency refuel complete.")
-                return true
-            end
-        else
-            print("CRITICAL FUEL: No ME Interface known!")
-        end
+        print("CRITICAL FUEL: " .. turtle.getFuelLevel())
+        return false
     end
-    
-    return turtle.getFuelLevel() > REFUEL_THRESHOLD
+    return true
 end
 
--- Turn turtle to face a specific direction
+-- Turn to face direction
 local function turnToFace(targetFacing)
     while facing ~= targetFacing do
         turtle.turnRight()
         facing = (facing + 1) % 4
+        sleep(MOVE_DELAY)
     end
 end
 
--- Movement with fuel check and position tracking
-local function moveTo(target, bypassFuel)
-    if not bypassFuel and not checkFuel() then
-        print("STALLED: Waiting for fuel...")
-        return false
-    end
-    
-    local current = getPosition()
-    if not current then return false end
-    
-    if turtle.getFuelLevel() < 10 then
-        print("ERROR: Out of fuel!")
-        return false
-    end
-    
-    -- Move to target Y first
-    while current.y < target.y do
-        if not turtle.up() then
-            turtle.digUp()
-            if not turtle.up() then break end
+-- Safe movement with verification
+local function moveForward()
+    if not turtle.forward() then
+        turtle.dig()
+        sleep(0.2)
+        if not turtle.forward() then
+            return false
         end
+    end
+    sleep(MOVE_DELAY)
+    return true
+end
+
+local function moveUp()
+    if not turtle.up() then
+        turtle.digUp()
+        sleep(0.2)
+        if not turtle.up() then
+            return false
+        end
+    end
+    sleep(MOVE_DELAY)
+    return true
+end
+
+local function moveDown()
+    if not turtle.down() then
+        turtle.digDown()
+        sleep(0.2)
+        if not turtle.down() then
+            return false
+        end
+    end
+    sleep(MOVE_DELAY)
+    return true
+end
+
+-- Move to target position SLOWLY
+local function moveTo(target)
+    if not checkFuel() then
+        print("ERROR: Low fuel!")
+        return false
+    end
+    
+    local current = getPosition(true)
+    if not current then 
+        print("ERROR: Cannot get GPS position!")
+        return false 
+    end
+    
+    print("Moving from " .. textutils.serialize(current))
+    print("         to " .. textutils.serialize(target))
+    
+    -- Move Y first
+    while current.y < target.y do
+        print("  Moving UP (y=" .. current.y .. " -> " .. target.y .. ")")
+        if not moveUp() then break end
         updatePositionAfterMove(0, 1, 0)
         current.y = current.y + 1
+        sendKeepalive() -- Send keepalive during long movements
     end
     
-    -- Move X (East/West)
+    while current.y > target.y do
+        print("  Moving DOWN (y=" .. current.y .. " -> " .. target.y .. ")")
+        if not moveDown() then break end
+        updatePositionAfterMove(0, -1, 0)
+        current.y = current.y - 1
+        sendKeepalive()
+    end
+    
+    -- Move X
     while current.x < target.x do
+        print("  Moving EAST (x=" .. current.x .. " -> " .. target.x .. ")")
         turnToFace(1) -- East
-        if not turtle.forward() then
-            turtle.dig()
-            if not turtle.forward() then break end
-        end
+        if not moveForward() then break end
         updatePositionAfterMove(1, 0, 0)
         current.x = current.x + 1
+        sendKeepalive()
     end
     
     while current.x > target.x do
+        print("  Moving WEST (x=" .. current.x .. " -> " .. target.x .. ")")
         turnToFace(3) -- West
-        if not turtle.forward() then
-            turtle.dig()
-            if not turtle.forward() then break end
-        end
+        if not moveForward() then break end
         updatePositionAfterMove(-1, 0, 0)
         current.x = current.x - 1
+        sendKeepalive()
     end
     
-    -- Move Z (South/North)
+    -- Move Z
     while current.z < target.z do
+        print("  Moving SOUTH (z=" .. current.z .. " -> " .. target.z .. ")")
         turnToFace(2) -- South
-        if not turtle.forward() then
-            turtle.dig()
-            if not turtle.forward() then break end
-        end
+        if not moveForward() then break end
         updatePositionAfterMove(0, 0, 1)
         current.z = current.z + 1
+        sendKeepalive()
     end
     
     while current.z > target.z do
+        print("  Moving NORTH (z=" .. current.z .. " -> " .. target.z .. ")")
         turnToFace(0) -- North
-        if not turtle.forward() then
-            turtle.dig()
-            if not turtle.forward() then break end
-        end
+        if not moveForward() then break end
         updatePositionAfterMove(0, 0, -1)
         current.z = current.z - 1
+        sendKeepalive()
     end
     
-    -- Move Y down if needed
-    while current.y > target.y do
-        if not turtle.down() then
-            turtle.digDown()
-            if not turtle.down() then break end
+    -- Verify final position
+    local finalPos = getPosition(true)
+    if finalPos then
+        if finalPos.x == target.x and finalPos.y == target.y and finalPos.z == target.z then
+            print("  Arrived successfully!")
+            return true
+        else
+            print("WARNING: Position mismatch!")
+            print("  Expected: " .. textutils.serialize(target))
+            print("  Actual:   " .. textutils.serialize(finalPos))
+            -- Update current position to GPS reading
+            currentPosition = finalPos
         end
-        updatePositionAfterMove(0, -1, 0)
-        current.y = current.y - 1
     end
     
     return true
 end
 
--- Return to home position
+-- Return home
 local function returnHome()
     if homePosition then
-        print("Returning home...")
+        print("=== Returning home ===")
         updateStatus("returning", "going to home position")
-        moveTo(homePosition)
-        saveId()
-        updateStatus("idle", "waiting")
+        if moveTo(homePosition) then
+            print("=== Home! ===")
+            saveId()
+            updateStatus("idle", "waiting")
+            return true
+        else
+            print("ERROR: Could not return home!")
+            return false
+        end
     end
+    return false
 end
 
--- Check if block is a stabilizer (skull, candle, head)
+-- Check if block is stabilizer
 local function isStabilizer(blockName)
     if not blockName then return false end
     local lowerName = blockName:lower()
@@ -247,31 +297,37 @@ local function isStabilizer(blockName)
            lowerName:find("candle")
 end
 
--- Scan for pedestals AND stabilizers around catalyst
+-- REDESIGNED: Slow, methodical scanning
 local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
-    print("=== Starting Pedestal Scan ===")
+    print("=================================")
+    print("STARTING PEDESTAL SCAN")
+    print("=================================")
     print("Catalyst position: " .. textutils.serialize(catalystPos))
-    print("Assigned rows (Z offsets): " .. textutils.serialize(assignedRows))
-    print("Current fuel level: " .. turtle.getFuelLevel())
+    print("Assigned rows (Z): " .. textutils.serialize(assignedRows))
+    print("Fuel: " .. turtle.getFuelLevel())
+    print("=================================")
+    
     updateStatus("scanning", "scanning pedestals")
+    sendKeepalive()
     
     local pedestals = {}
     local stabilizers = {}
     local foundPedestals = {}
     local foundStabilizers = {}
     
-    -- Flying height: 2 blocks above catalyst pedestal (1 above catalyst computer)
+    -- Fly at Y+2 (2 blocks above catalyst)
     local flyingY = catalystPos.y + 2
     
     print("Flying at Y=" .. flyingY .. " (2 above catalyst)")
     
-    -- Scan assigned rows only, northwest to southeast
-    for _, zOffset in ipairs(assignedRows) do
-        print("Scanning row Z offset: " .. zOffset)
+    -- Scan each assigned row SLOWLY
+    for rowIdx, zOffset in ipairs(assignedRows) do
+        print("")
+        print("--- ROW " .. rowIdx .. "/" .. #assignedRows .. " (Z offset: " .. zOffset .. ") ---")
         
         -- Scan west to east (X from -3 to +3)
         for xOffset = -3, 3 do
-            -- Skip center (catalyst pedestal at zOffset=0, xOffset=0)
+            -- Skip center (catalyst)
             if not (xOffset == 0 and zOffset == 0) then
                 local scanPos = {
                     x = catalystPos.x + xOffset,
@@ -279,77 +335,88 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                     z = catalystPos.z + zOffset
                 }
                 
-                -- Move to scan position
-                if moveTo(scanPos) then
-                    -- Verify Y level
-                    local currentPos = getPosition(false)
-                    if currentPos and currentPos.y ~= flyingY then
-                        print("WARNING: Y drift! Correcting to " .. flyingY)
-                        while currentPos.y < flyingY do
-                            turtle.up()
-                            currentPos = getPosition(false)
-                        end
-                        while currentPos.y > flyingY do
-                            turtle.down()
-                            currentPos = getPosition(false)
-                        end
-                    end
+                print("")
+                print("Scan position [" .. xOffset .. "," .. zOffset .. "]")
+                
+                -- Move to position
+                if not moveTo(scanPos) then
+                    print("ERROR: Could not reach scan position!")
+                    continue
+                end
+                
+                -- VERIFY we're at the right position
+                local verifyPos = getPosition(true)
+                if not verifyPos or 
+                   verifyPos.x ~= scanPos.x or 
+                   verifyPos.y ~= scanPos.y or 
+                   verifyPos.z ~= scanPos.z then
+                    print("WARNING: GPS verification failed!")
+                    print("  Expected: " .. textutils.serialize(scanPos))
+                    print("  Got:      " .. textutils.serialize(verifyPos))
+                    continue
+                end
+                
+                -- Wait before scanning
+                sleep(SCAN_DELAY)
+                
+                -- Scan what's below
+                local success, block = turtle.inspectDown()
+                
+                if success and block.name then
+                    print("  Detected: " .. block.name)
                     
-                    -- Check what's below us
-                    local success, block = turtle.inspectDown()
+                    local itemPos = {
+                        x = verifyPos.x,
+                        y = verifyPos.y - 1,
+                        z = verifyPos.z
+                    }
                     
-                    if success and block.name then
-                        local gpsPos = getPosition(true)
-                        
-                        -- Check if it's a pedestal
-                        if block.name:find("edestal") then
-                            local pedestalPos = {
-                                x = gpsPos.x,
-                                y = gpsPos.y - 1,  -- Pedestal is 1 block below
-                                z = gpsPos.z
-                            }
-                            
-                            local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
-                            
-                            if not foundPedestals[posKey] then
-                                foundPedestals[posKey] = true
-                                print("Found PEDESTAL: " .. block.name .. " at " .. textutils.serialize(pedestalPos))
-                                table.insert(pedestals, pedestalPos)
-                            end
-                        
-                        -- Check if it's a stabilizer (skull, candle, head)
-                        elseif isStabilizer(block.name) then
-                            local stabilizerPos = {
-                                x = gpsPos.x,
-                                y = gpsPos.y - 1,  -- Stabilizer is 1 block below
-                                z = gpsPos.z
-                            }
-                            
-                            local posKey = stabilizerPos.x .. "," .. stabilizerPos.y .. "," .. stabilizerPos.z
-                            
-                            if not foundStabilizers[posKey] then
-                                foundStabilizers[posKey] = true
-                                print("Found STABILIZER: " .. block.name .. " at " .. textutils.serialize(stabilizerPos))
-                                table.insert(stabilizers, stabilizerPos)
-                            end
+                    local posKey = itemPos.x .. "," .. itemPos.y .. "," .. itemPos.z
+                    
+                    -- Check for pedestal
+                    if block.name:find("edestal") then
+                        if not foundPedestals[posKey] then
+                            foundPedestals[posKey] = true
+                            table.insert(pedestals, itemPos)
+                            print("  >>> PEDESTAL FOUND <<<")
                         end
+                    
+                    -- Check for stabilizer
+                    elseif isStabilizer(block.name) then
+                        if not foundStabilizers[posKey] then
+                            foundStabilizers[posKey] = true
+                            table.insert(stabilizers, itemPos)
+                            print("  >>> STABILIZER FOUND <<<")
+                        end
+                    else
+                        print("  (other block)")
                     end
                 else
-                    print("WARNING: Could not reach scan position " .. textutils.serialize(scanPos))
+                    print("  Empty/Air")
                 end
+                
+                -- Send keepalive after each scan
+                sendKeepalive()
             end
         end
+        
+        print("--- End of row " .. rowIdx .. " ---")
+        print("Pedestals so far: " .. #pedestals)
+        print("Stabilizers so far: " .. #stabilizers)
     end
     
-    print("=== Scan Complete ===")
-    print("Found " .. #pedestals .. " pedestals")
-    print("Found " .. #stabilizers .. " stabilizers")
+    print("")
+    print("=================================")
+    print("SCAN COMPLETE")
+    print("=================================")
+    print("Total Pedestals: " .. #pedestals)
+    print("Total Stabilizers: " .. #stabilizers)
+    print("=================================")
     
-    returnHome()
     return pedestals, stabilizers
 end
 
--- Place item on pedestal
+-- Place item on pedestal (unchanged, works fine)
 local function placeItemOnPedestal(item, position, chestPos)
     print("Placing item on pedestal at " .. textutils.serialize(position))
     updateStatus("working", "picking up item")
@@ -418,7 +485,7 @@ local function placeItemOnPedestal(item, position, chestPos)
     return true
 end
 
--- Retrieve item from pedestal
+-- Retrieve item
 local function retrieveItemFromPedestal(position, mePos)
     print("Retrieving item from pedestal at " .. textutils.serialize(position))
     updateStatus("working", "picking up result")
@@ -503,10 +570,10 @@ local function executeTask(task)
     print("Executing task: " .. task.type)
     
     if task.type == "scan_pedestals" then
-        updateStatus("scanning", "scanning pedestals")
         local pedestals, stabilizers = scanPedestalsAroundCatalyst(task.catalystPosition, task.assignedRows)
         
-        -- Report results to server
+        -- Report results
+        print("Sending scan results to server...")
         modem.transmit(CHANNEL, CHANNEL, {
             type = "pedestals_scanned",
             data = {
@@ -516,23 +583,33 @@ local function executeTask(task)
                 turtleId = assignedId
             }
         })
-        return true
+        
+        -- Return home
+        return returnHome()
         
     elseif task.type == "place_catalyst" then
         updateStatus("working", "placing catalyst")
-        return placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        returnHome()
+        return result
         
     elseif task.type == "place_ingredient" then
         updateStatus("working", "placing ingredient")
-        return placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        returnHome()
+        return result
         
     elseif task.type == "retrieve_result" then
         updateStatus("working", "retrieving result")
-        return retrieveItemFromPedestal(task.position, task.meInterfacePosition)
+        local result = retrieveItemFromPedestal(task.position, task.meInterfacePosition)
+        returnHome()
+        return result
         
     elseif task.type == "clear_pedestal" then
         updateStatus("working", "clearing pedestal")
-        return clearPedestal(task.position, task.meInterfacePosition)
+        local result = clearPedestal(task.position, task.meInterfacePosition)
+        returnHome()
+        return result
     end
     
     return false
@@ -554,7 +631,7 @@ local function processTasks()
         })
     end
     
-    returnHome()
+    updateStatus("idle", "waiting")
 end
 
 -- Handle messages
@@ -573,7 +650,6 @@ local function handleMessage(msg)
             print("=================================")
             print("Assigned ID: #" .. assignedId)
             print("=================================")
-            print("")
             print("Ready for tasks...")
         end
     
@@ -606,14 +682,14 @@ end
 -- Main loop
 local function main()
     print("=================================")
-    print("Thaumcraft Turtle Worker v3.1")
+    print("Thaumcraft Turtle Worker v3.2")
     print("=================================")
     
     print("Computer ID: " .. computerID)
     print("Fuel level: " .. turtle.getFuelLevel())
     
     if turtle.getFuelLevel() < 100 then
-        print("WARNING: Low fuel! Please add coal/charcoal.")
+        print("WARNING: Low fuel!")
     end
     
     local hasSavedId = loadSavedId()
@@ -626,7 +702,7 @@ local function main()
     print("Home position: " .. textutils.serialize(homePosition))
     
     if hasSavedId then
-        print("Re-registering with server using saved ID #" .. assignedId)
+        print("Re-registering with ID #" .. assignedId)
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_reregister",
             data = {
@@ -636,11 +712,11 @@ local function main()
             }
         })
     else
-        print("Registering with server as new turtle")
+        print("Registering as new turtle")
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_register",
             data = {
-                computerId = computerID,
+                computerID = computerID,
                 position = homePosition
             }
         })
@@ -649,7 +725,7 @@ local function main()
     print("Waiting for confirmation...")
     
     local registerTimer = os.startTimer(5)
-    local keepaliveTimer = os.startTimer(10)
+    local keepaliveTimer = os.startTimer(3) -- More frequent keepalives
     
     while true do
         local event, side, channel, replyChannel, message, distance = os.pullEvent()
@@ -660,7 +736,6 @@ local function main()
         elseif event == "timer" then
             if side == registerTimer then
                 if not assignedId then
-                    print("Retrying registration...")
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "turtle_register",
                         data = {
@@ -668,28 +743,12 @@ local function main()
                             position = homePosition
                         }
                     })
-                else
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "turtle_keepalive",
-                        data = {
-                            turtleId = assignedId,
-                            position = currentPosition or homePosition
-                        }
-                    })
                 end
                 registerTimer = os.startTimer(5)
                 
             elseif side == keepaliveTimer then
-                if assignedId then
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "turtle_keepalive",
-                        data = {
-                            turtleId = assignedId,
-                            position = currentPosition or homePosition
-                        }
-                    })
-                end
-                keepaliveTimer = os.startTimer(10)
+                sendKeepalive()
+                keepaliveTimer = os.startTimer(3)
             end
         end
     end
