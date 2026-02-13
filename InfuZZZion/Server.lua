@@ -1,6 +1,5 @@
--- Thaumcraft Infusion Automation Server v3.1
--- Manages recipes, turtle coordination, and infusion tracking
--- FIXED: Altar re-registration now triggers pedestal scan when needed
+-- Thaumcraft Infusion Automation Server v3.2
+-- UPDATED: Single turtle scanning, layout confirmation required before infusions
 
 local CHANNEL = 1742
 local DATABASE_FILE = "itemdb.dat"
@@ -9,7 +8,7 @@ local DATABASE_FILE = "itemdb.dat"
 local recipes = {}
 local activeInfusions = {}
 local turtles = {}
-local altars = {} -- Now registered by catalyst pedestal computers
+local altars = {}
 local inputChest = nil
 local chestPosition = nil
 local meInterfacePosition = nil
@@ -19,18 +18,17 @@ local errorMessage = ""
 local nextTurtleId = 1
 local nextAltarId = 1
 local setupComplete = false
-local altarLastSeen = {} -- Track last keepalive from altars
-local turtleLastSeen = {} -- Track last keepalive from turtles
-local KEEPALIVE_TIMEOUT = 30000 -- 30 seconds in milliseconds
+local altarLastSeen = {}
+local turtleLastSeen = {}
+local KEEPALIVE_TIMEOUT = 30000
 
 -- Modem setup
 local modem = peripheral.find("modem")
 if not modem then
-    error("No modem found! Please attach an ender modem on top.")
+    error("No modem found!")
 end
 modem.open(CHANNEL)
 
--- Wrap peripherals
 inputChest = peripheral.wrap("right")
 
 -- Get server GPS position
@@ -64,13 +62,12 @@ local function loadDatabase()
         if data then
             recipes = data.recipes or {}
             altars = data.altars or {}
-            -- Restore nextAltarId
             nextAltarId = #altars + 1
         end
     end
 end
 
--- Compare items with NBT/DMG matching
+-- Compare items
 local function itemsMatch(item1, item2, matchNBT, matchDMG)
     if item1.name ~= item2.name then
         return false
@@ -87,7 +84,7 @@ local function itemsMatch(item1, item2, matchNBT, matchDMG)
     return true
 end
 
--- Send message to all clients
+-- Broadcast
 local function broadcast(msgType, data)
     modem.transmit(CHANNEL, CHANNEL, {
         type = msgType,
@@ -107,12 +104,11 @@ local function updateTurtleStatus(turtleId, status, statusDetail)
     end
 end
 
--- Check for offline components
+-- Check keepalives
 local function checkKeepalives()
     local now = os.epoch("utc")
     local errors = {}
     
-    -- Check altars
     for _, altar in ipairs(altars) do
         if altarLastSeen[altar.id] then
             if now - altarLastSeen[altar.id] > KEEPALIVE_TIMEOUT then
@@ -122,7 +118,6 @@ local function checkKeepalives()
         end
     end
     
-    -- Check turtles
     for _, turtle in ipairs(turtles) do
         if turtleLastSeen[turtle.id] then
             if now - turtleLastSeen[turtle.id] > KEEPALIVE_TIMEOUT then
@@ -132,7 +127,6 @@ local function checkKeepalives()
         end
     end
     
-    -- Update error mode if components are offline
     if #errors > 0 then
         errorMode = true
         errorMessage = table.concat(errors, ", ")
@@ -140,7 +134,7 @@ local function checkKeepalives()
     end
 end
 
--- Request turtle to scan pedestals around altar
+-- UPDATED: Use ONLY the first turtle for scanning
 local function requestPedestalScan(altarId)
     local altar = nil
     for _, a in ipairs(altars) do
@@ -157,61 +151,49 @@ local function requestPedestalScan(altarId)
         return 
     end
     
+    -- CHANGED: Only use the FIRST turtle
+    local turtle = turtles[1]
+    
+    print("=================================")
     print("Requesting pedestal scan for altar #" .. altarId)
-    print("Distributing rows among " .. #turtles .. " turtle(s)")
+    print("Using turtle #" .. turtle.id .. " (single turtle mode)")
+    print("=================================")
     
-    -- Assign rows to turtles (round-robin)
-    -- 7x7 grid = 7 rows (Z offsets from catalyst)
-    local rows = {-3, -2, -1, 0, 1, 2, 3}  -- Z offsets from catalyst
+    -- Assign ALL rows to the one turtle (full 7x7 scan)
+    local allRows = {-3, -2, -1, 0, 1, 2, 3}
     
-    for turtleIdx, turtle in ipairs(turtles) do
-        local assignedRows = {}
-        
-        -- Assign every Nth row to this turtle (where N = number of turtles)
-        for i = turtleIdx, #rows, #turtles do
-            table.insert(assignedRows, rows[i])
-        end
-        
-        if #assignedRows > 0 then
-            print("Turtle #" .. turtle.id .. " scanning rows: " .. textutils.serialize(assignedRows))
-            
-            -- Broadcast on CHANNEL, turtle filters by turtleId
-            modem.transmit(CHANNEL, CHANNEL, {
-                type = "scan_pedestals",
-                data = {
-                    turtleId = turtle.id,
-                    altarId = altarId,
-                    catalystPosition = altar.catalyst,
-                    assignedRows = assignedRows  -- Z offsets this turtle should scan
-                }
-            })
-            
-            updateTurtleStatus(turtle.id, "scanning", "scanning pedestals")
-        end
-    end
+    print("Turtle #" .. turtle.id .. " will scan all rows: " .. textutils.serialize(allRows))
+    
+    modem.transmit(CHANNEL, CHANNEL, {
+        type = "scan_pedestals",
+        data = {
+            turtleId = turtle.id,
+            altarId = altarId,
+            catalystPosition = altar.catalyst,
+            assignedRows = allRows  -- All 7 rows
+        }
+    })
+    
+    updateTurtleStatus(turtle.id, "scanning", "scanning all pedestals")
 end
 
--- Register altar from catalyst pedestal computer
+-- Register altar
 local function registerAltar(catalystPos, isReregister, existingId)
     local altarId = existingId or nextAltarId
     
-    -- Check if altar already exists at this position
     local found = false
     local existingAltar = nil
     for _, altar in ipairs(altars) do
         if altar.catalyst.x == catalystPos.x and 
            altar.catalyst.y == catalystPos.y and 
            altar.catalyst.z == catalystPos.z then
-            -- Update existing altar
             altar.id = altarId
             found = true
             existingAltar = altar
-            print("Re-registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
+            print("Re-registered altar #" .. altarId)
             
-            -- Track keepalive
             altarLastSeen[altarId] = os.epoch("utc")
             
-            -- Send ID assignment
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "altar_id_assigned",
                 data = {
@@ -223,16 +205,14 @@ local function registerAltar(catalystPos, isReregister, existingId)
         end
     end
     
-    -- FIXED: If re-registering and needs scanning, trigger it
     if found and existingAltar then
-        if not existingAltar.pedestalsScanned and #turtles > 0 then
-            print("Altar #" .. altarId .. " needs pedestal scan, triggering...")
+        if not existingAltar.layoutConfirmed and #turtles > 0 then
+            print("Altar #" .. altarId .. " needs confirmation, triggering scan...")
             requestPedestalScan(altarId)
         end
         return
     end
     
-    -- New altar registration
     if not found then
         if not isReregister then
             nextAltarId = nextAltarId + 1
@@ -241,16 +221,16 @@ local function registerAltar(catalystPos, isReregister, existingId)
         local altar = {
             id = altarId,
             catalyst = catalystPos,
-            pedestals = {}, -- Will be filled by turtle during setup
-            stabilizers = {}, -- Track skull candles/heads
+            pedestals = {},
+            stabilizers = {},
             busy = false,
             currentRecipe = nil,
-            pedestalsScanned = false
+            pedestalsScanned = false,
+            layoutConfirmed = false  -- NEW: Must be confirmed before infusions
         }
         
         table.insert(altars, altar)
         
-        -- Sort by distance from server (closer = higher priority)
         if serverPosition then
             table.sort(altars, function(a, b)
                 local distA = math.abs(a.catalyst.x - serverPosition.x) + 
@@ -263,13 +243,11 @@ local function registerAltar(catalystPos, isReregister, existingId)
             end)
         end
         
-        print("Registered NEW altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
+        print("Registered NEW altar #" .. altarId)
         saveDatabase()
         
-        -- Track keepalive
         altarLastSeen[altarId] = os.epoch("utc")
         
-        -- Send ID assignment
         modem.transmit(CHANNEL, CHANNEL, {
             type = "altar_id_assigned",
             data = {
@@ -283,37 +261,33 @@ local function registerAltar(catalystPos, isReregister, existingId)
             totalAltars = #altars
         })
         
-        -- Request turtle to scan pedestals if we have turtles
-        if #turtles > 0 and not altar.pedestalsScanned then
-            print("New altar registered, triggering pedestal scan...")
+        if #turtles > 0 then
+            print("New altar registered, triggering scan...")
             requestPedestalScan(altarId)
         else
-            print("Waiting for turtles to register before scanning...")
+            print("Waiting for turtles...")
         end
     end
 end
 
--- Handle turtle registration
+-- Register turtle
 local function registerTurtle(computerId, position, isReregister, existingId)
     local turtleId = existingId or nextTurtleId
     
-    -- Check if turtle already exists (by ID or by computerId)
     local found = false
     for _, turtle in ipairs(turtles) do
         if turtle.id == turtleId or (not isReregister and turtle.computerId == computerId) then
-            -- Update existing turtle
             turtle.computerId = computerId
             turtle.position = position
             turtle.status = "idle"
             turtle.statusDetail = "waiting"
-            turtleId = turtle.id  -- Use existing ID
+            turtleId = turtle.id
             found = true
-            print("Re-registered turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+            print("Re-registered turtle #" .. turtleId)
             break
         end
     end
     
-    -- Add new turtle if not found
     if not found then
         if not isReregister then
             nextTurtleId = nextTurtleId + 1
@@ -327,13 +301,11 @@ local function registerTurtle(computerId, position, isReregister, existingId)
             statusDetail = "waiting",
             tasks = {}
         })
-        print("Registered NEW turtle #" .. turtleId .. " (Computer " .. computerId .. ")")
+        print("Registered NEW turtle #" .. turtleId)
     end
     
-    -- Track keepalive
     turtleLastSeen[turtleId] = os.epoch("utc")
     
-    -- Send assigned ID back to turtle (broadcast on CHANNEL, turtle filters by computerId)
     modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_id_assigned",
         data = {
@@ -349,13 +321,13 @@ local function registerTurtle(computerId, position, isReregister, existingId)
         totalTurtles = #turtles
     })
     
-    -- IMPORTANT: If we have altars that need pedestal scanning, start now
-    print("Checking for altars needing pedestal scan...")
+    -- Trigger scans for unconfirmed altars
+    print("Checking for altars needing confirmation...")
     for _, altar in ipairs(altars) do
-        if not altar.pedestalsScanned then
-            print("Found altar #" .. altar.id .. " needing scan, triggering...")
+        if not altar.layoutConfirmed then
+            print("Found altar #" .. altar.id .. " needing confirmation, triggering scan...")
             requestPedestalScan(altar.id)
-            break  -- Only trigger one scan at a time
+            break  -- Only one at a time
         end
     end
 end
@@ -370,19 +342,17 @@ local function completeSetup()
     print("Setup Complete!")
     print("=================================")
     print("Altars ready: " .. #altars)
-    print("System ready for infusion!")
-    print("")
+    print("=================================")
     
     broadcast("setup_complete", {
         altarCount = #altars
     })
 end
 
--- Handle pedestal scan results
+-- Handle scan results
 local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerPositions, turtleId)
     for _, altar in ipairs(altars) do
         if altar.id == altarId then
-            -- Initialize arrays if needed
             if not altar.pedestals then
                 altar.pedestals = {}
             end
@@ -390,85 +360,67 @@ local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerP
                 altar.stabilizers = {}
             end
             
-            -- Merge new pedestals and stabilizers, avoiding duplicates
-            local foundPositions = {}
+            -- Replace (not merge) with new scan results
+            altar.pedestals = pedestalPositions or {}
+            altar.stabilizers = stabilizerPositions or {}
             
-            -- Track existing pedestals
-            for _, existing in ipairs(altar.pedestals) do
-                local key = existing.x .. "," .. existing.y .. "," .. existing.z
-                foundPositions[key] = true
-            end
+            print("Altar #" .. altarId .. " scan results:")
+            print("  Pedestals: " .. #altar.pedestals)
+            print("  Stabilizers: " .. #altar.stabilizers)
             
-            -- Add new pedestals if not duplicate
-            local newCount = 0
-            for _, newPed in ipairs(pedestalPositions) do
-                local key = newPed.x .. "," .. newPed.y .. "," .. newPed.z
-                if not foundPositions[key] then
-                    table.insert(altar.pedestals, newPed)
-                    foundPositions[key] = true
-                    newCount = newCount + 1
-                end
-            end
+            -- Sort pedestals by distance
+            table.sort(altar.pedestals, function(a, b)
+                local distA = math.abs(a.x - altar.catalyst.x) + math.abs(a.z - altar.catalyst.z)
+                local distB = math.abs(b.x - altar.catalyst.x) + math.abs(b.z - altar.catalyst.z)
+                return distA < distB
+            end)
             
-            -- Track existing stabilizers
-            local stabPositions = {}
-            for _, existing in ipairs(altar.stabilizers) do
-                local key = existing.x .. "," .. existing.y .. "," .. existing.z
-                stabPositions[key] = true
-            end
+            altar.pedestalsScanned = true
+            -- Don't auto-confirm, wait for manual confirmation
             
-            -- Add new stabilizers
-            local newStabCount = 0
-            for _, newStab in ipairs(stabilizerPositions) do
-                local key = newStab.x .. "," .. newStab.y .. "," .. newStab.z
-                if not stabPositions[key] then
-                    table.insert(altar.stabilizers, newStab)
-                    stabPositions[key] = true
-                    newStabCount = newStabCount + 1
-                end
-            end
+            print("Altar #" .. altarId .. " scan complete (awaiting confirmation)")
             
-            print("Turtle #" .. turtleId .. " found " .. #pedestalPositions .. " pedestals (" .. newCount .. " new)")
-            print("Turtle #" .. turtleId .. " found " .. #stabilizerPositions .. " stabilizers (" .. newStabCount .. " new)")
-            print("Altar #" .. altarId .. " total pedestals: " .. #altar.pedestals)
-            print("Altar #" .. altarId .. " total stabilizers: " .. #altar.stabilizers)
+            -- Send layout to catalyst computer for saving
+            broadcast("altar_layout", {
+                altarId = altarId,
+                pedestals = altar.pedestals,
+                stabilizers = altar.stabilizers
+            })
             
-            -- Check if all turtles have reported back
-            local allTurtlesDone = true
-            for _, turtle in ipairs(turtles) do
-                if turtle.status == "scanning" then
-                    allTurtlesDone = false
+            saveDatabase()
+            
+            -- Mark turtle as idle
+            updateTurtleStatus(turtleId, "idle", "waiting")
+            
+            break
+        end
+    end
+end
+
+-- NEW: Confirm altar layout
+local function confirmAltarLayout(altarId)
+    for _, altar in ipairs(altars) do
+        if altar.id == altarId then
+            altar.layoutConfirmed = true
+            print("Altar #" .. altarId .. " layout CONFIRMED!")
+            
+            saveDatabase()
+            
+            broadcast("altar_confirmed", {
+                altarId = altarId
+            })
+            
+            -- Check if all altars confirmed
+            local allConfirmed = true
+            for _, a in ipairs(altars) do
+                if not a.layoutConfirmed then
+                    allConfirmed = false
                     break
                 end
             end
             
-            -- If all turtles done scanning, finalize the altar
-            if allTurtlesDone then
-                -- Sort pedestals by distance (center first, corners last)
-                table.sort(altar.pedestals, function(a, b)
-                    local distA = math.abs(a.x - altar.catalyst.x) + math.abs(a.z - altar.catalyst.z)
-                    local distB = math.abs(b.x - altar.catalyst.x) + math.abs(b.z - altar.catalyst.z)
-                    return distA < distB
-                end)
-                
-                altar.pedestalsScanned = true
-                print("Altar #" .. altarId .. " scan complete!")
-                print("  Pedestals: " .. #altar.pedestals .. " (sorted by distance)")
-                print("  Stabilizers: " .. #altar.stabilizers)
-                saveDatabase()
-                
-                -- Check if all altars are scanned
-                local allAltarsScanned = true
-                for _, a in ipairs(altars) do
-                    if not a.pedestalsScanned then
-                        allAltarsScanned = false
-                        break
-                    end
-                end
-                
-                if allAltarsScanned and #altars > 0 then
-                    completeSetup()
-                end
+            if allConfirmed and #altars > 0 then
+                completeSetup()
             end
             
             break
@@ -476,27 +428,24 @@ local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerP
     end
 end
 
--- Check if recipe already exists
+-- Recipe management (unchanged)
 local function recipeExists(catalyst, ingredients)
     for _, recipe in ipairs(recipes) do
         local match = true
-
-        -- Check catalyst match
+        
         if not itemsMatch(catalyst.item, recipe.catalyst.item, true, true) then
             match = false
         end
-
+        
         if match and (catalyst.matchNBT ~= recipe.catalyst.matchNBT or 
                       catalyst.matchDMG ~= recipe.catalyst.matchDMG) then
             match = false
         end
-
-        -- Check ingredient count
+        
         if match and #ingredients ~= #recipe.ingredients then
             match = false
         end
-
-        -- Check all ingredients match (order doesn't matter)
+        
         if match then
             for _, ing1 in ipairs(ingredients) do
                 local found = false
@@ -514,18 +463,16 @@ local function recipeExists(catalyst, ingredients)
                 end
             end
         end
-
+        
         if match then
             return true
         end
     end
-
+    
     return false
 end
 
--- Add recipe
 local function addRecipe(catalyst, ingredients)
-    -- Check for duplicate
     if recipeExists(catalyst, ingredients) then
         modem.transmit(CHANNEL, CHANNEL, {
             type = "add_recipe_nack",
@@ -564,7 +511,6 @@ local function addRecipe(catalyst, ingredients)
     print("Added recipe #" .. #recipes)
 end
 
--- Check if chest contents match a recipe
 local function findMatchingRecipe()
     if not inputChest then return nil end
     
@@ -582,13 +528,11 @@ local function findMatchingRecipe()
         })
     end
     
-    -- Try to match each recipe
     for recipeId, recipe in ipairs(recipes) do
         local catalystFound = false
         local ingredientsFound = {}
         local matched = true
         
-        -- Check catalyst
         for _, chestItem in ipairs(chestItems) do
             if itemsMatch(chestItem, recipe.catalyst.item, recipe.catalyst.matchNBT, recipe.catalyst.matchDMG) then
                 catalystFound = true
@@ -597,7 +541,6 @@ local function findMatchingRecipe()
         end
         
         if catalystFound then
-            -- Check ingredients
             for _, ingredient in ipairs(recipe.ingredients) do
                 local found = false
                 for _, chestItem in ipairs(chestItems) do
@@ -631,15 +574,19 @@ local function findMatchingRecipe()
     return nil
 end
 
--- Assign tasks to turtles for infusion
 local function startInfusion(recipeId, recipe, altarIdx)
     print("Starting infusion for recipe #" .. recipeId .. " on altar #" .. altarIdx)
     
     local altar = altars[altarIdx]
     
-    -- Check if altar has pedestals scanned
+    -- CRITICAL: Check if layout is confirmed
+    if not altar.layoutConfirmed then
+        print("ERROR: Altar #" .. altarIdx .. " layout not confirmed yet!")
+        return
+    end
+    
     if not altar.pedestalsScanned or #altar.pedestals == 0 then
-        print("ERROR: Altar #" .. altarIdx .. " pedestals not scanned yet!")
+        print("ERROR: Altar #" .. altarIdx .. " pedestals not scanned!")
         return
     end
     
@@ -655,7 +602,6 @@ local function startInfusion(recipeId, recipe, altarIdx)
     
     activeInfusions[altar.id] = infusion
     
-    -- Assign catalyst to first turtle
     if turtles[1] then
         table.insert(turtles[1].tasks, {
             type = "place_catalyst",
@@ -666,7 +612,6 @@ local function startInfusion(recipeId, recipe, altarIdx)
         updateTurtleStatus(turtles[1].id, "working", "placing catalyst")
     end
     
-    -- Assign ingredients round-robin
     local turtleIdx = 2
     for i, ingredient in ipairs(recipe.ingredients) do
         if i > #altar.pedestals then
@@ -691,7 +636,6 @@ local function startInfusion(recipeId, recipe, altarIdx)
         end
     end
     
-    -- Send tasks to turtles
     for _, turtle in ipairs(turtles) do
         if #turtle.tasks > 0 then
             modem.transmit(turtle.computerId, CHANNEL, {
@@ -704,7 +648,6 @@ local function startInfusion(recipeId, recipe, altarIdx)
         end
     end
     
-    -- Notify altar computer
     broadcast("infusion_started", {
         recipeId = recipeId,
         altarId = altar.id,
@@ -712,7 +655,6 @@ local function startInfusion(recipeId, recipe, altarIdx)
     })
 end
 
--- Handle infusion completion
 local function completeInfusion(altarId, resultItem)
     local infusion = activeInfusions[altarId]
     if not infusion then return end
@@ -724,10 +666,8 @@ local function completeInfusion(altarId, resultItem)
     recipe.totalTime = recipe.totalTime + duration
     recipe.averageTime = recipe.totalTime / recipe.completedCount
     
-    print("Infusion complete! Duration: " .. duration .. "s, Average: " .. recipe.averageTime .. "s")
-    print("Result: " .. resultItem.displayName)
+    print("Infusion complete! Duration: " .. duration .. "s")
     
-    -- Find altar
     local altar = nil
     for _, a in ipairs(altars) do
         if a.id == altarId then
@@ -738,16 +678,13 @@ local function completeInfusion(altarId, resultItem)
     
     if not altar then return end
     
-    -- Assign result retrieval and pedestal clearing
     if turtles[1] then
-        -- Retrieve catalyst (which is now the result)
         table.insert(turtles[1].tasks, {
             type = "retrieve_result",
             position = altar.catalyst,
             meInterfacePosition = meInterfacePosition
         })
         
-        -- Clear all pedestals
         for _, pedestalPos in ipairs(altar.pedestals) do
             table.insert(turtles[1].tasks, {
                 type = "clear_pedestal",
@@ -781,7 +718,7 @@ local function completeInfusion(altarId, resultItem)
     })
 end
 
--- Handle messages from network
+-- Handle messages
 local function handleMessage(msg, sender)
     if type(msg) ~= "table" or not msg.type then return end
     
@@ -806,6 +743,13 @@ local function handleMessage(msg, sender)
             msg.data.stabilizerPositions or {},
             msg.data.turtleId
         )
+    
+    elseif msg.type == "confirm_altar_layout" then
+        confirmAltarLayout(msg.data.altarId)
+    
+    elseif msg.type == "rescan_altar" then
+        print("Manual rescan requested for altar #" .. msg.data.altarId)
+        requestPedestalScan(msg.data.altarId)
     
     elseif msg.type == "add_recipe" then
         addRecipe(msg.data.catalyst, msg.data.ingredients)
@@ -881,10 +825,9 @@ end
 -- Main loop
 local function main()
     print("=================================")
-    print("Thaumcraft Infusion Server v3.1")
+    print("Thaumcraft Infusion Server v3.2")
     print("=================================")
     
-    -- Get server position
     serverPosition = getServerPosition()
     if not serverPosition then
         print("WARNING: Running without GPS")
@@ -892,32 +835,28 @@ local function main()
         print("Server position: " .. textutils.serialize(serverPosition))
     end
     
-    -- Set peripheral positions based on server position
     if serverPosition then
         chestPosition = {
             x = serverPosition.x + 1,
             y = serverPosition.y,
             z = serverPosition.z
         }
-        -- ME Interface should be connected to chest (adjust as needed)
         meInterfacePosition = chestPosition
         print("Chest position: " .. textutils.serialize(chestPosition))
     end
     
-    -- Load database
     loadDatabase()
-    print("Loaded " .. #recipes .. " recipes and " .. #altars .. " altars from database")
+    print("Loaded " .. #recipes .. " recipes and " .. #altars .. " altars")
     
     if not inputChest then
-        print("ERROR: No input chest found on RIGHT side")
+        print("ERROR: No input chest on RIGHT side")
         errorMode = true
-        errorMessage = "Input chest not found on RIGHT side of server"
+        errorMessage = "Input chest not found"
     end
     
     print("\nServer ready! Listening on channel " .. CHANNEL)
-    print("Waiting for catalyst pedestal computers and turtles to register...")
+    print("SINGLE TURTLE MODE: Only first turtle will scan")
     
-    -- Main event loop
     local checkTimer = os.startTimer(2)
     local keepaliveTimer = os.startTimer(10)
     
@@ -929,13 +868,12 @@ local function main()
             
         elseif event == "timer" then
             if side == checkTimer then
-                -- Check for recipe matches (only after setup is complete)
+                -- CRITICAL: Only start infusions on CONFIRMED altars
                 if setupComplete and not errorMode and #turtles >= 1 and #altars > 0 then
                     local recipeId, recipe = findMatchingRecipe()
                     if recipeId then
-                        -- Find available altar
                         for altarIdx, altar in ipairs(altars) do
-                            if not altar.busy and altar.pedestalsScanned then
+                            if not altar.busy and altar.layoutConfirmed then
                                 startInfusion(recipeId, recipe, altarIdx)
                                 break
                             end
@@ -946,7 +884,6 @@ local function main()
                 checkTimer = os.startTimer(2)
                 
             elseif side == keepaliveTimer then
-                -- Check keepalives
                 checkKeepalives()
                 keepaliveTimer = os.startTimer(10)
             end
