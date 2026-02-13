@@ -1,6 +1,6 @@
--- Thaumcraft Infusion Automation Server v3.0
+-- Thaumcraft Infusion Automation Server v3.1
 -- Manages recipes, turtle coordination, and infusion tracking
--- Uses catalyst pedestal computers instead of scanning
+-- FIXED: Altar re-registration now triggers pedestal scan when needed
 
 local CHANNEL = 1742
 local DATABASE_FILE = "itemdb.dat"
@@ -152,13 +152,16 @@ local function requestPedestalScan(altarId)
     
     if not altar then return end
     
-    if #turtles == 0 then return end
+    if #turtles == 0 then 
+        print("WARNING: No turtles available for pedestal scan")
+        return 
+    end
     
     print("Requesting pedestal scan for altar #" .. altarId)
     print("Distributing rows among " .. #turtles .. " turtle(s)")
     
     -- Assign rows to turtles (round-robin)
-    -- 7x7 grid = 7 rows (excluding center row which has catalyst)
+    -- 7x7 grid = 7 rows (Z offsets from catalyst)
     local rows = {-3, -2, -1, 0, 1, 2, 3}  -- Z offsets from catalyst
     
     for turtleIdx, turtle in ipairs(turtles) do
@@ -194,6 +197,7 @@ local function registerAltar(catalystPos, isReregister, existingId)
     
     -- Check if altar already exists at this position
     local found = false
+    local existingAltar = nil
     for _, altar in ipairs(altars) do
         if altar.catalyst.x == catalystPos.x and 
            altar.catalyst.y == catalystPos.y and 
@@ -201,6 +205,7 @@ local function registerAltar(catalystPos, isReregister, existingId)
             -- Update existing altar
             altar.id = altarId
             found = true
+            existingAltar = altar
             print("Re-registered altar #" .. altarId .. " at " .. textutils.serialize(catalystPos))
             
             -- Track keepalive
@@ -214,8 +219,17 @@ local function registerAltar(catalystPos, isReregister, existingId)
                     altarId = altarId
                 }
             })
-            return
+            break
         end
+    end
+    
+    -- FIXED: If re-registering and needs scanning, trigger it
+    if found and existingAltar then
+        if not existingAltar.pedestalsScanned and #turtles > 0 then
+            print("Altar #" .. altarId .. " needs pedestal scan, triggering...")
+            requestPedestalScan(altarId)
+        end
+        return
     end
     
     -- New altar registration
@@ -228,6 +242,7 @@ local function registerAltar(catalystPos, isReregister, existingId)
             id = altarId,
             catalyst = catalystPos,
             pedestals = {}, -- Will be filled by turtle during setup
+            stabilizers = {}, -- Track skull candles/heads
             busy = false,
             currentRecipe = nil,
             pedestalsScanned = false
@@ -270,7 +285,10 @@ local function registerAltar(catalystPos, isReregister, existingId)
         
         -- Request turtle to scan pedestals if we have turtles
         if #turtles > 0 and not altar.pedestalsScanned then
+            print("New altar registered, triggering pedestal scan...")
             requestPedestalScan(altarId)
+        else
+            print("Waiting for turtles to register before scanning...")
         end
     end
 end
@@ -331,11 +349,13 @@ local function registerTurtle(computerId, position, isReregister, existingId)
         totalTurtles = #turtles
     })
     
-    -- If we have altars that need pedestal scanning, start
+    -- IMPORTANT: If we have altars that need pedestal scanning, start now
+    print("Checking for altars needing pedestal scan...")
     for _, altar in ipairs(altars) do
         if not altar.pedestalsScanned then
+            print("Found altar #" .. altar.id .. " needing scan, triggering...")
             requestPedestalScan(altar.id)
-            break
+            break  -- Only trigger one scan at a time
         end
     end
 end
@@ -359,15 +379,18 @@ local function completeSetup()
 end
 
 -- Handle pedestal scan results
-local function handlePedestalScanResults(altarId, pedestalPositions, turtleId)
+local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerPositions, turtleId)
     for _, altar in ipairs(altars) do
         if altar.id == altarId then
-            -- Initialize pedestals array if needed
+            -- Initialize arrays if needed
             if not altar.pedestals then
                 altar.pedestals = {}
             end
+            if not altar.stabilizers then
+                altar.stabilizers = {}
+            end
             
-            -- Merge new pedestals, avoiding duplicates
+            -- Merge new pedestals and stabilizers, avoiding duplicates
             local foundPositions = {}
             
             -- Track existing pedestals
@@ -387,8 +410,28 @@ local function handlePedestalScanResults(altarId, pedestalPositions, turtleId)
                 end
             end
             
+            -- Track existing stabilizers
+            local stabPositions = {}
+            for _, existing in ipairs(altar.stabilizers) do
+                local key = existing.x .. "," .. existing.y .. "," .. existing.z
+                stabPositions[key] = true
+            end
+            
+            -- Add new stabilizers
+            local newStabCount = 0
+            for _, newStab in ipairs(stabilizerPositions) do
+                local key = newStab.x .. "," .. newStab.y .. "," .. newStab.z
+                if not stabPositions[key] then
+                    table.insert(altar.stabilizers, newStab)
+                    stabPositions[key] = true
+                    newStabCount = newStabCount + 1
+                end
+            end
+            
             print("Turtle #" .. turtleId .. " found " .. #pedestalPositions .. " pedestals (" .. newCount .. " new)")
+            print("Turtle #" .. turtleId .. " found " .. #stabilizerPositions .. " stabilizers (" .. newStabCount .. " new)")
             print("Altar #" .. altarId .. " total pedestals: " .. #altar.pedestals)
+            print("Altar #" .. altarId .. " total stabilizers: " .. #altar.stabilizers)
             
             -- Check if all turtles have reported back
             local allTurtlesDone = true
@@ -409,7 +452,9 @@ local function handlePedestalScanResults(altarId, pedestalPositions, turtleId)
                 end)
                 
                 altar.pedestalsScanned = true
-                print("Altar #" .. altarId .. " scan complete! " .. #altar.pedestals .. " pedestals (sorted by distance)")
+                print("Altar #" .. altarId .. " scan complete!")
+                print("  Pedestals: " .. #altar.pedestals .. " (sorted by distance)")
+                print("  Stabilizers: " .. #altar.stabilizers)
                 saveDatabase()
                 
                 -- Check if all altars are scanned
@@ -430,8 +475,6 @@ local function handlePedestalScanResults(altarId, pedestalPositions, turtleId)
         end
     end
 end
-
-
 
 -- Check if recipe already exists
 local function recipeExists(catalyst, ingredients)
@@ -757,7 +800,12 @@ local function handleMessage(msg, sender)
         registerAltar(msg.data.catalystPosition, true, msg.data.altarId)
     
     elseif msg.type == "pedestals_scanned" then
-        handlePedestalScanResults(msg.data.altarId, msg.data.pedestalPositions, msg.data.turtleId)
+        handlePedestalScanResults(
+            msg.data.altarId, 
+            msg.data.pedestalPositions, 
+            msg.data.stabilizerPositions or {},
+            msg.data.turtleId
+        )
     
     elseif msg.type == "add_recipe" then
         addRecipe(msg.data.catalyst, msg.data.ingredients)
@@ -833,7 +881,7 @@ end
 -- Main loop
 local function main()
     print("=================================")
-    print("Thaumcraft Infusion Server v3.0")
+    print("Thaumcraft Infusion Server v3.1")
     print("=================================")
     
     -- Get server position
