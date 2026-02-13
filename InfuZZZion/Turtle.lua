@@ -339,64 +339,63 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                 print("Scan position [" .. xOffset .. "," .. zOffset .. "]")
                 
                 -- Move to position
-                if not moveTo(scanPos) then
-                    print("ERROR: Could not reach scan position!")
-                    continue
-                end
-                
-                -- VERIFY we're at the right position
-                local verifyPos = getPosition(true)
-                if not verifyPos or 
-                   verifyPos.x ~= scanPos.x or 
-                   verifyPos.y ~= scanPos.y or 
-                   verifyPos.z ~= scanPos.z then
-                    print("WARNING: GPS verification failed!")
-                    print("  Expected: " .. textutils.serialize(scanPos))
-                    print("  Got:      " .. textutils.serialize(verifyPos))
-                    continue
-                end
-                
-                -- Wait before scanning
-                sleep(SCAN_DELAY)
-                
-                -- Scan what's below
-                local success, block = turtle.inspectDown()
-                
-                if success and block.name then
-                    print("  Detected: " .. block.name)
-                    
-                    local itemPos = {
-                        x = verifyPos.x,
-                        y = verifyPos.y - 1,
-                        z = verifyPos.z
-                    }
-                    
-                    local posKey = itemPos.x .. "," .. itemPos.y .. "," .. itemPos.z
-                    
-                    -- Check for pedestal
-                    if block.name:find("edestal") then
-                        if not foundPedestals[posKey] then
-                            foundPedestals[posKey] = true
-                            table.insert(pedestals, itemPos)
-                            print("  >>> PEDESTAL FOUND <<<")
+                if moveTo(scanPos) then
+                    -- VERIFY we're at the right position
+                    local verifyPos = getPosition(true)
+                    if verifyPos and 
+                       verifyPos.x == scanPos.x and 
+                       verifyPos.y == scanPos.y and 
+                       verifyPos.z == scanPos.z then
+                        
+                        -- Wait before scanning
+                        sleep(SCAN_DELAY)
+                        
+                        -- Scan what's below
+                        local success, block = turtle.inspectDown()
+                        
+                        if success and block.name then
+                            print("  Detected: " .. block.name)
+                            
+                            local itemPos = {
+                                x = verifyPos.x,
+                                y = verifyPos.y - 1,
+                                z = verifyPos.z
+                            }
+                            
+                            local posKey = itemPos.x .. "," .. itemPos.y .. "," .. itemPos.z
+                            
+                            -- Check for pedestal
+                            if block.name:find("edestal") then
+                                if not foundPedestals[posKey] then
+                                    foundPedestals[posKey] = true
+                                    table.insert(pedestals, itemPos)
+                                    print("  >>> PEDESTAL FOUND <<<")
+                                end
+                            
+                            -- Check for stabilizer
+                            elseif isStabilizer(block.name) then
+                                if not foundStabilizers[posKey] then
+                                    foundStabilizers[posKey] = true
+                                    table.insert(stabilizers, itemPos)
+                                    print("  >>> STABILIZER FOUND <<<")
+                                end
+                            else
+                                print("  (other block)")
+                            end
+                        else
+                            print("  Empty/Air")
                         end
-                    
-                    -- Check for stabilizer
-                    elseif isStabilizer(block.name) then
-                        if not foundStabilizers[posKey] then
-                            foundStabilizers[posKey] = true
-                            table.insert(stabilizers, itemPos)
-                            print("  >>> STABILIZER FOUND <<<")
-                        end
+                        
+                        -- Send keepalive after each scan
+                        sendKeepalive()
                     else
-                        print("  (other block)")
+                        print("WARNING: GPS verification failed!")
+                        print("  Expected: " .. textutils.serialize(scanPos))
+                        print("  Got:      " .. textutils.serialize(verifyPos))
                     end
                 else
-                    print("  Empty/Air")
+                    print("ERROR: Could not reach scan position!")
                 end
-                
-                -- Send keepalive after each scan
-                sendKeepalive()
             end
         end
         
@@ -725,7 +724,7 @@ local function main()
     print("Waiting for confirmation...")
     
     local registerTimer = os.startTimer(5)
-    local keepaliveTimer = os.startTimer(3) -- More frequent keepalives
+    local keepaliveTimer = os.startTimer(30) -- Keepalive every 30 seconds
     
     while true do
         local event, side, channel, replyChannel, message, distance = os.pullEvent()
@@ -748,7 +747,7 @@ local function main()
                 
             elseif side == keepaliveTimer then
                 sendKeepalive()
-                keepaliveTimer = os.startTimer(3)
+                keepaliveTimer = os.startTimer(30) -- Keepalive every 30 seconds
             end
         end
     end
