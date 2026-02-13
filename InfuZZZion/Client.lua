@@ -1,12 +1,12 @@
--- Thaumcraft Infusion Client v3.1
--- NEW: Altar layout visualization tab with 7x7 grid display
+-- Thaumcraft Infusion Client v3.2
+-- NEW: Layout confirmation and rescan features
 
 local CHANNEL = 1742
 
 -- State
 local monitor = peripheral.find("monitor")
 local modem = peripheral.find("modem")
-local currentTab = "status" -- "status", "programming", "recipes", or "altars"
+local currentTab = "status"
 local chestContents = {}
 local selectedItems = {}
 local selectionMode = nil
@@ -20,19 +20,19 @@ local scrollOffset = 0
 local statusMessage = ""
 local statusMessageTime = 0
 local setupComplete = false
-local selectedAltarId = nil -- For altar tab
+local selectedAltarId = nil
 
 if not monitor then
     error("No monitor found!")
 end
 
 if not modem then
-    error("No modem found! Please attach an ender modem.")
+    error("No modem found!")
 end
 
 modem.open(CHANNEL)
 
--- Monitor dimensions
+-- Monitor setup
 local width, height = monitor.getSize()
 monitor.setTextScale(0.5)
 width, height = monitor.getSize()
@@ -51,6 +51,7 @@ local COLOR_PEDESTAL = colors.lime
 local COLOR_STABILIZER = colors.lightBlue
 local COLOR_AIR = colors.gray
 local COLOR_PILLAR = colors.orange
+local COLOR_WARNING = colors.orange
 
 -- Clear monitor
 local function clearMonitor()
@@ -82,19 +83,15 @@ end
 local function drawTabs()
     local tabWidth = math.floor(width / 4)
     
-    -- Status tab
     local statusColor = currentTab == "status" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
     drawButton(1, 1, tabWidth, "Status", statusColor, COLOR_TEXT)
     
-    -- Programming tab
     local progColor = currentTab == "programming" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
     drawButton(tabWidth + 1, 1, tabWidth, "Program", progColor, COLOR_TEXT)
     
-    -- Recipes tab
     local recipeColor = currentTab == "recipes" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
     drawButton(tabWidth * 2 + 1, 1, tabWidth, "Recipes", recipeColor, COLOR_TEXT)
     
-    -- NEW: Altars tab
     local altarColor = currentTab == "altars" and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
     drawButton(tabWidth * 3 + 1, 1, width - (tabWidth * 3), "Altars", altarColor, COLOR_TEXT)
 end
@@ -107,13 +104,13 @@ local function drawStatusMessage()
     end
 end
 
--- Show status message
+-- Show status
 local function showStatus(msg)
     statusMessage = msg
     statusMessageTime = os.epoch("utc")
 end
 
--- Draw status tab
+-- Draw status tab (similar to before but show confirmation status)
 local function drawStatusTab()
     local y = 3
     
@@ -147,9 +144,22 @@ local function drawStatusTab()
     end
     
     if not setupComplete then
-        drawText(1, y, "SETUP IN PROGRESS", COLOR_BG, colors.orange)
+        drawText(1, y, "SETUP IN PROGRESS", COLOR_BG, COLOR_WARNING)
         y = y + 1
-        drawText(1, y, "Waiting for pedestal scanning...", COLOR_BG, colors.gray)
+        
+        -- Show which altars need confirmation
+        local unconfirmedCount = 0
+        for _, altar in ipairs(altars) do
+            if not altar.layoutConfirmed then
+                unconfirmedCount = unconfirmedCount + 1
+            end
+        end
+        
+        if unconfirmedCount > 0 then
+            drawText(1, y, unconfirmedCount .. " altar(s) awaiting confirmation", COLOR_BG, COLOR_WARNING)
+        else
+            drawText(1, y, "Waiting for altar scans...", COLOR_BG, colors.gray)
+        end
         y = y + 2
     end
     
@@ -221,7 +231,7 @@ local function drawStatusTab()
     end
 end
 
--- Draw programming tab
+-- Draw programming tab (unchanged)
 local function drawProgrammingTab()
     local y = 3
     
@@ -293,7 +303,7 @@ local function drawProgrammingTab()
     drawButton(1, y, width, addText, addColor, COLOR_TEXT)
 end
 
--- Draw recipes tab
+-- Draw recipes tab (unchanged)
 local function drawRecipesTab()
     local y = 3
     
@@ -340,7 +350,7 @@ local function drawRecipesTab()
     end
 end
 
--- NEW: Draw altars tab
+-- UPDATED: Draw altars tab with confirmation buttons
 local function drawAltarsTab()
     local y = 3
     
@@ -349,16 +359,24 @@ local function drawAltarsTab()
         return
     end
     
-    -- Left side: Altar list (1/3 of screen)
     local listWidth = math.floor(width / 3)
     
     drawText(1, y, "Altars:", COLOR_BG, COLOR_HEADER)
     y = y + 1
     
-    -- Draw altar list
     for _, altar in ipairs(altars) do
         local listColor = (selectedAltarId == altar.id) and COLOR_BUTTON_ACTIVE or COLOR_BUTTON
-        local statusIcon = altar.pedestalsScanned and "[OK]" or "[..]"
+        
+        -- Status icon based on confirmation state
+        local statusIcon
+        if altar.layoutConfirmed then
+            statusIcon = "[OK]"
+        elseif altar.pedestalsScanned then
+            statusIcon = "[??]"  -- Scanned but not confirmed
+        else
+            statusIcon = "[..]"  -- Not scanned
+        end
+        
         local altarText = "#" .. altar.id .. " " .. statusIcon
         
         if altar.busy then
@@ -371,7 +389,7 @@ local function drawAltarsTab()
         if y >= height - 1 then break end
     end
     
-    -- Right side: 7x7 Grid visualization
+    -- Right side: Grid + buttons
     if selectedAltarId then
         local selectedAltar = nil
         for _, altar in ipairs(altars) do
@@ -386,14 +404,22 @@ local function drawAltarsTab()
             local gridY = 3
             
             -- Title
-            drawText(gridX, gridY, "Altar #" .. selectedAltarId .. " Layout", COLOR_BG, COLOR_HEADER)
+            local titleText = "Altar #" .. selectedAltarId
+            if selectedAltar.layoutConfirmed then
+                titleText = titleText .. " [CONFIRMED]"
+            elseif selectedAltar.pedestalsScanned then
+                titleText = titleText .. " [AWAITING CONFIRM]"
+            else
+                titleText = titleText .. " [NOT SCANNED]"
+            end
+            drawText(gridX, gridY, titleText, COLOR_BG, COLOR_HEADER)
             gridY = gridY + 2
             
             -- Legend
-            drawText(gridX, gridY, "G=Air B=Stab P=Ped O=Pillar", COLOR_BG, colors.gray)
+            drawText(gridX, gridY, "G=Air B=Stab P=Ped C=Cat O=Pillar", COLOR_BG, colors.gray)
             gridY = gridY + 2
             
-            -- Create position lookup maps
+            -- Create position maps
             local pedestalMap = {}
             local stabilizerMap = {}
             
@@ -415,48 +441,57 @@ local function drawAltarsTab()
                 end
             end
             
-            -- Draw 7x7 grid (Z=-3 to Z=3, X=-3 to X=3)
+            -- Draw 7x7 grid
             for z = -3, 3 do
                 for x = -3, 3 do
                     local posKey = x .. "," .. z
-                    local symbol = "G" -- Air/Gray by default
+                    local symbol = "G"
                     local symbolColor = COLOR_AIR
                     
-                    -- Check if this is the catalyst center
                     if x == 0 and z == 0 then
                         symbol = "C"
                         symbolColor = COLOR_CATALYST
                     
-                    -- Check for infusion pillars (corners)
                     elseif (x == -2 and z == -2) or (x == -2 and z == 2) or 
                            (x == 2 and z == -2) or (x == 2 and z == 2) then
                         symbol = "O"
                         symbolColor = COLOR_PILLAR
                     
-                    -- Check if pedestal
                     elseif pedestalMap[posKey] then
                         symbol = "P"
                         symbolColor = COLOR_PEDESTAL
                     
-                    -- Check if stabilizer
                     elseif stabilizerMap[posKey] then
                         symbol = "B"
                         symbolColor = COLOR_STABILIZER
                     end
                     
-                    -- Draw the symbol
                     drawText(gridX + x + 3, gridY + z + 3, symbol, COLOR_BG, symbolColor)
                 end
             end
             
-            -- Stats below grid
+            -- Stats and buttons below grid
             local statsY = gridY + 11
             drawText(gridX, statsY, "Pedestals: " .. #(selectedAltar.pedestals or {}), COLOR_BG, COLOR_TEXT)
             statsY = statsY + 1
             drawText(gridX, statsY, "Stabilizers: " .. #(selectedAltar.stabilizers or {}), COLOR_BG, COLOR_TEXT)
+            statsY = statsY + 2
+            
+            -- NEW: Action buttons
+            if selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
+                -- Show CONFIRM button
+                drawButton(gridX, statsY, 15, "CONFIRM LAYOUT", COLOR_SUCCESS, COLOR_TEXT)
+                statsY = statsY + 1
+                drawButton(gridX, statsY, 15, "RESCAN", COLOR_WARNING, COLOR_TEXT)
+            elseif selectedAltar.layoutConfirmed then
+                -- Show RESCAN button only
+                drawButton(gridX, statsY, 15, "RESCAN", COLOR_BUTTON, COLOR_TEXT)
+            else
+                -- Not scanned yet
+                drawText(gridX, statsY, "Waiting for scan...", COLOR_BG, colors.gray)
+            end
         end
     else
-        -- No altar selected, show instructions
         drawText(listWidth + 3, 5, "Select an altar from the list", COLOR_BG, colors.gray)
         drawText(listWidth + 3, 6, "to view its layout", COLOR_BG, colors.gray)
     end
@@ -480,7 +515,7 @@ local function draw()
     drawStatusMessage()
 end
 
--- Handle touch
+-- UPDATED: Handle touch with new buttons
 local function handleTouch(x, y)
     local tabWidth = math.floor(width / 4)
     
@@ -503,7 +538,6 @@ local function handleTouch(x, y)
         return
     end
     
-    -- Status tab
     if currentTab == "status" then
         if errorMode and y >= 6 and y <= 7 then
             modem.transmit(CHANNEL, CHANNEL, {
@@ -514,16 +548,15 @@ local function handleTouch(x, y)
         return
     end
     
-    -- Recipes tab
     if currentTab == "recipes" then
         return
     end
     
-    -- NEW: Altars tab
+    -- UPDATED: Altars tab with button handling
     if currentTab == "altars" then
         local listWidth = math.floor(width / 3)
         
-        -- Check if clicking on altar list
+        -- Altar list selection
         if x <= listWidth and y >= 4 then
             local altarIdx = y - 3
             if altarIdx >= 1 and altarIdx <= #altars then
@@ -531,10 +564,54 @@ local function handleTouch(x, y)
                 draw()
             end
         end
+        
+        -- Button area (right side, bottom)
+        local gridX = listWidth + 3
+        local buttonY1 = 17  -- First button row
+        local buttonY2 = 18  -- Second button row
+        
+        if selectedAltarId and x >= gridX then
+            local selectedAltar = nil
+            for _, altar in ipairs(altars) do
+                if altar.id == selectedAltarId then
+                    selectedAltar = altar
+                    break
+                end
+            end
+            
+            if selectedAltar then
+                -- CONFIRM LAYOUT button
+                if y == buttonY1 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "confirm_altar_layout",
+                        data = {
+                            altarId = selectedAltarId
+                        }
+                    })
+                    showStatus("Confirming altar #" .. selectedAltarId .. " layout...")
+                    draw()
+                
+                -- RESCAN button
+                elseif y == buttonY1 or y == buttonY2 then
+                    if (y == buttonY2 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed) or
+                       (y == buttonY1 and selectedAltar.layoutConfirmed) then
+                        modem.transmit(CHANNEL, CHANNEL, {
+                            type = "rescan_altar",
+                            data = {
+                                altarId = selectedAltarId
+                            }
+                        })
+                        showStatus("Requesting rescan of altar #" .. selectedAltarId .. "...")
+                        draw()
+                    end
+                end
+            end
+        end
+        
         return
     end
     
-    -- Programming tab
+    -- Programming tab (unchanged)
     if currentTab == "programming" then
         if y >= 4 and y < height - 2 then
             local itemIdx = y - 3
@@ -665,7 +742,6 @@ local function handleMessage(msg)
         errorMessage = msg.data.errorMessage or ""
         setupComplete = msg.data.setupComplete or false
         
-        -- Auto-select first altar if none selected
         if currentTab == "altars" and not selectedAltarId and #altars > 0 then
             selectedAltarId = altars[1].id
         end
@@ -691,6 +767,10 @@ local function handleMessage(msg)
         showStatus("Setup complete! " .. (msg.data.altarCount or 0) .. " altars ready")
         draw()
         
+    elseif msg.type == "altar_confirmed" then
+        showStatus("Altar #" .. msg.data.altarId .. " confirmed!")
+        draw()
+        
     elseif msg.type == "add_recipe_ack" then
         showStatus("Recipe added successfully!")
         selectedItems = {}
@@ -712,7 +792,7 @@ end
 
 -- Main loop
 local function main()
-    print("Thaumcraft Infusion Client v3.1 Starting...")
+    print("Thaumcraft Infusion Client v3.2 Starting...")
     
     clearMonitor()
     drawText(1, math.floor(height / 2), "Connecting to server...", COLOR_BG, COLOR_HEADER)
