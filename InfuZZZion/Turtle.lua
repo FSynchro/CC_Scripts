@@ -181,93 +181,188 @@ local function moveDown()
     return true
 end
 
--- Move to target position SLOWLY
+-- Move to target position SLOWLY with GPS-based position tracking
 local function moveTo(target)
     if not checkFuel() then
         print("ERROR: Low fuel!")
         return false
     end
     
-    local current = getPosition(true)
-    if not current then 
+    local startPos = getPosition(true)
+    if not startPos then 
         print("ERROR: Cannot get GPS position!")
         return false 
     end
     
-    print("Moving from " .. textutils.serialize(current))
+    print("Moving from " .. textutils.serialize(startPos))
     print("         to " .. textutils.serialize(target))
     
+    local MAX_AXIS_ATTEMPTS = 5  -- Max attempts per axis before giving up
+    local stuckCounter = 0
+    
     -- Move Y first
-    while current.y < target.y do
-        print("  Moving UP (y=" .. current.y .. " -> " .. target.y .. ")")
-        if not moveUp() then break end
-        updatePositionAfterMove(0, 1, 0)
-        current.y = current.y + 1
-        sendKeepalive() -- Send keepalive during long movements
+    local yAttempts = 0
+    while yAttempts < MAX_AXIS_ATTEMPTS do
+        local current = getPosition(true)  -- Get fresh GPS position
+        if not current then
+            print("ERROR: Lost GPS signal!")
+            return false
+        end
+        
+        if current.y == target.y then
+            break  -- Y is correct
+        elseif current.y < target.y then
+            print("  Moving UP (y=" .. current.y .. " -> " .. target.y .. ")")
+            if moveUp() then
+                stuckCounter = 0  -- Reset stuck counter on success
+            else
+                print("  UP BLOCKED!")
+                yAttempts = yAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        elseif current.y > target.y then
+            print("  Moving DOWN (y=" .. current.y .. " -> " .. target.y .. ")")
+            if moveDown() then
+                stuckCounter = 0
+            else
+                print("  DOWN BLOCKED!")
+                yAttempts = yAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        end
     end
     
-    while current.y > target.y do
-        print("  Moving DOWN (y=" .. current.y .. " -> " .. target.y .. ")")
-        if not moveDown() then break end
-        updatePositionAfterMove(0, -1, 0)
-        current.y = current.y - 1
-        sendKeepalive()
+    if yAttempts >= MAX_AXIS_ATTEMPTS then
+        print("ERROR: Cannot reach target Y after " .. MAX_AXIS_ATTEMPTS .. " attempts")
+        return false
     end
     
     -- Move X
-    while current.x < target.x do
-        print("  Moving EAST (x=" .. current.x .. " -> " .. target.x .. ")")
-        turnToFace(1) -- East
-        if not moveForward() then break end
-        updatePositionAfterMove(1, 0, 0)
-        current.x = current.x + 1
-        sendKeepalive()
+    local xAttempts = 0
+    while xAttempts < MAX_AXIS_ATTEMPTS do
+        local current = getPosition(true)
+        if not current then
+            print("ERROR: Lost GPS signal!")
+            return false
+        end
+        
+        if current.x == target.x then
+            break  -- X is correct
+        elseif current.x < target.x then
+            print("  Moving EAST (x=" .. current.x .. " -> " .. target.x .. ")")
+            turnToFace(1)
+            if moveForward() then
+                stuckCounter = 0
+            else
+                print("  EAST BLOCKED!")
+                xAttempts = xAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        elseif current.x > target.x then
+            print("  Moving WEST (x=" .. current.x .. " -> " .. target.x .. ")")
+            turnToFace(3)
+            if moveForward() then
+                stuckCounter = 0
+            else
+                print("  WEST BLOCKED!")
+                xAttempts = xAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        end
     end
     
-    while current.x > target.x do
-        print("  Moving WEST (x=" .. current.x .. " -> " .. target.x .. ")")
-        turnToFace(3) -- West
-        if not moveForward() then break end
-        updatePositionAfterMove(-1, 0, 0)
-        current.x = current.x - 1
-        sendKeepalive()
+    if xAttempts >= MAX_AXIS_ATTEMPTS then
+        print("ERROR: Cannot reach target X after " .. MAX_AXIS_ATTEMPTS .. " attempts")
+        return false
     end
     
     -- Move Z
-    while current.z < target.z do
-        print("  Moving SOUTH (z=" .. current.z .. " -> " .. target.z .. ")")
-        turnToFace(2) -- South
-        if not moveForward() then break end
-        updatePositionAfterMove(0, 0, 1)
-        current.z = current.z + 1
-        sendKeepalive()
+    local zAttempts = 0
+    while zAttempts < MAX_AXIS_ATTEMPTS do
+        local current = getPosition(true)
+        if not current then
+            print("ERROR: Lost GPS signal!")
+            return false
+        end
+        
+        if current.z == target.z then
+            break  -- Z is correct
+        elseif current.z < target.z then
+            print("  Moving SOUTH (z=" .. current.z .. " -> " .. target.z .. ")")
+            turnToFace(2)
+            if moveForward() then
+                stuckCounter = 0
+            else
+                print("  SOUTH BLOCKED!")
+                zAttempts = zAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        elseif current.z > target.z then
+            print("  Moving NORTH (z=" .. current.z .. " -> " .. target.z .. ")")
+            turnToFace(0)
+            if moveForward() then
+                stuckCounter = 0
+            else
+                print("  NORTH BLOCKED!")
+                zAttempts = zAttempts + 1
+                stuckCounter = stuckCounter + 1
+                if stuckCounter >= 3 then
+                    print("ERROR: Stuck! Cannot move in any direction!")
+                    return false
+                end
+            end
+            sendKeepalive()
+        end
     end
     
-    while current.z > target.z do
-        print("  Moving NORTH (z=" .. current.z .. " -> " .. target.z .. ")")
-        turnToFace(0) -- North
-        if not moveForward() then break end
-        updatePositionAfterMove(0, 0, -1)
-        current.z = current.z - 1
-        sendKeepalive()
+    if zAttempts >= MAX_AXIS_ATTEMPTS then
+        print("ERROR: Cannot reach target Z after " .. MAX_AXIS_ATTEMPTS .. " attempts")
+        return false
     end
     
-    -- Verify final position
+    -- Final verification
     local finalPos = getPosition(true)
     if finalPos then
+        currentPosition = finalPos  -- Update cached position
+        
         if finalPos.x == target.x and finalPos.y == target.y and finalPos.z == target.z then
             print("  Arrived successfully!")
             return true
         else
-            print("WARNING: Position mismatch!")
+            print("ERROR: Position mismatch after movement!")
             print("  Expected: " .. textutils.serialize(target))
             print("  Actual:   " .. textutils.serialize(finalPos))
-            -- Update current position to GPS reading
-            currentPosition = finalPos
+            return false
         end
     end
     
-    return true
+    print("ERROR: GPS verification failed!")
+    return false
 end
 
 -- Return home
@@ -321,6 +416,9 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
     print("Flying at Y=" .. flyingY .. " (2 above catalyst)")
     
     -- Scan each assigned row SLOWLY
+    local totalFailed = 0
+    local MAX_TOTAL_FAILURES = 10  -- Abort if too many positions fail
+    
     for rowIdx, zOffset in ipairs(assignedRows) do
         print("")
         print("--- ROW " .. rowIdx .. "/" .. #assignedRows .. " (Z offset: " .. zOffset .. ") ---")
@@ -392,11 +490,27 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                         print("WARNING: GPS verification failed!")
                         print("  Expected: " .. textutils.serialize(scanPos))
                         print("  Got:      " .. textutils.serialize(verifyPos))
+                        totalFailed = totalFailed + 1
                     end
                 else
-                    print("ERROR: Could not reach scan position!")
+                    totalFailed = totalFailed + 1
+                    print("SKIPPED: Could not reach position (Total failed: " .. totalFailed .. "/" .. MAX_TOTAL_FAILURES .. ")")
+                    
+                    if totalFailed >= MAX_TOTAL_FAILURES then
+                        print("")
+                        print("!!! TOO MANY FAILURES - ABORTING SCAN !!!")
+                        print("Reporting partial results...")
+                        print("Pedestals found: " .. #pedestals)
+                        print("Stabilizers found: " .. #stabilizers)
+                        break
+                    end
                 end
             end
+        end
+        
+        -- Break outer loop if we aborted
+        if totalFailed >= MAX_TOTAL_FAILURES then
+            break
         end
         
         print("--- End of row " .. rowIdx .. " ---")
