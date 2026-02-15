@@ -594,26 +594,52 @@ local function handleTouch(x, y)
             if selectedAltar then
                 -- CONFIRM LAYOUT button
                 if y == buttonY1 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
+                    -- Visual feedback: flash button
+                    drawButton(gridX, statsY, 15, "CONFIRMING...", colors.orange, COLOR_TEXT)
+                    sleep(0.1)
+                    
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "confirm_altar_layout",
                         data = {
                             altarId = selectedAltarId
                         }
                     })
-                    showStatus("Confirming altar #" .. selectedAltarId .. " layout...")
+                    showStatus("Sent confirmation request for altar #" .. selectedAltarId)
+                    
+                    -- Request immediate status update to see the change
+                    sleep(0.2)
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "request_status",
+                        data = {}
+                    })
+                    
                     draw()
                 
                 -- RESCAN button
                 elseif y == buttonY1 or y == buttonY2 then
                     if (y == buttonY2 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed) or
                        (y == buttonY1 and selectedAltar.layoutConfirmed) then
+                        
+                        -- Visual feedback for rescan
+                        local buttonY = (y == buttonY2) and (statsY + 1) or statsY
+                        drawButton(gridX, buttonY, 15, "RESCANNING...", colors.orange, COLOR_TEXT)
+                        sleep(0.1)
+                        
                         modem.transmit(CHANNEL, CHANNEL, {
                             type = "rescan_altar",
                             data = {
                                 altarId = selectedAltarId
                             }
                         })
-                        showStatus("Requesting rescan of altar #" .. selectedAltarId .. "...")
+                        showStatus("Sent rescan request for altar #" .. selectedAltarId)
+                        
+                        -- Request status update
+                        sleep(0.2)
+                        modem.transmit(CHANNEL, CHANNEL, {
+                            type = "request_status",
+                            data = {}
+                        })
+                        
                         draw()
                     end
                 end
@@ -780,7 +806,24 @@ local function handleMessage(msg)
         draw()
         
     elseif msg.type == "altar_confirmed" then
+        print("Received altar_confirmed for altar #" .. msg.data.altarId)
         showStatus("Altar #" .. msg.data.altarId .. " confirmed!")
+        
+        -- Update local state immediately
+        for _, altar in ipairs(altars) do
+            if altar.id == msg.data.altarId then
+                altar.layoutConfirmed = true
+                print("Updated local state: altar " .. altar.id .. " confirmed")
+                break
+            end
+        end
+        
+        -- Request fresh status to be sure
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "request_status",
+            data = {}
+        })
+        
         draw()
         
     elseif msg.type == "altar_layout_cleared" then
