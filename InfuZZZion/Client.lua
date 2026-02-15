@@ -450,18 +450,20 @@ local function drawAltarsTab()
                     local symbol = "?"  -- Unknown by default
                     local symbolColor = colors.gray
                     
+                    -- Always show catalyst (we always know where it is)
                     if x == 0 and z == 0 then
                         symbol = "C"
                         symbolColor = COLOR_CATALYST
                     
-                    -- FIXED: Pillars at (±2, ±1) not (±2, ±2)
-                    elseif (x == -2 and z == -1) or (x == -2 and z == 1) or 
-                           (x == 2 and z == -1) or (x == 2 and z == 1) then
+                    -- FIXED: Pillars at (±1, ±2) - one block closer on X axis
+                    elseif (x == -1 and z == -2) or (x == -1 and z == 2) or 
+                           (x == 1 and z == -2) or (x == 1 and z == 2) then
                         symbol = "O"
                         symbolColor = COLOR_PILLAR
                     
-                    -- Only show scan results if scanning is complete
-                    elseif selectedAltar.pedestalsScanned then
+                    -- Only show scan results if we have actual data
+                    elseif selectedAltar.pedestalsScanned and 
+                           (#selectedAltar.pedestals > 0 or #selectedAltar.stabilizers > 0) then
                         if pedestalMap[posKey] then
                             symbol = "P"
                             symbolColor = COLOR_PEDESTAL
@@ -471,7 +473,7 @@ local function drawAltarsTab()
                             symbolColor = COLOR_STABILIZER
                         
                         else
-                            symbol = "G"  -- Air
+                            symbol = "G"  -- Air (confirmed empty)
                             symbolColor = COLOR_AIR
                         end
                     end
