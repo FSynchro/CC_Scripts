@@ -135,11 +135,30 @@ local function checkFuel()
     return true
 end
 
--- Turn to face direction
+-- Turn to face direction (shortest path)
 local function turnToFace(targetFacing)
-    while facing ~= targetFacing do
+    if facing == targetFacing then return end
+    
+    -- Calculate shortest turn
+    local diff = (targetFacing - facing) % 4
+    
+    if diff == 1 or diff == -3 then
+        -- Turn right once
         turtle.turnRight()
         facing = (facing + 1) % 4
+        sleep(MOVE_DELAY)
+    elseif diff == 2 or diff == -2 then
+        -- Turn 180 (doesn't matter which way, use right)
+        turtle.turnRight()
+        facing = (facing + 1) % 4
+        sleep(MOVE_DELAY)
+        turtle.turnRight()
+        facing = (facing + 1) % 4
+        sleep(MOVE_DELAY)
+    elseif diff == 3 or diff == -1 then
+        -- Turn left once (3 rights = 1 left, but actually turn left)
+        turtle.turnLeft()
+        facing = (facing - 1) % 4
         sleep(MOVE_DELAY)
     end
 end
@@ -365,20 +384,43 @@ local function moveTo(target)
     return false
 end
 
--- Return home
+-- Return home (X,Z first, then Y for safety)
 local function returnHome()
     if homePosition then
         print("=== Returning home ===")
         updateStatus("returning", "going to home position")
-        if moveTo(homePosition) then
-            print("=== Home! ===")
-            saveId()
-            updateStatus("idle", "waiting")
-            return true
-        else
-            print("ERROR: Could not return home!")
+        
+        -- Get current position
+        local current = getPosition(true)
+        if not current then
+            print("ERROR: Cannot get GPS position for return!")
             return false
         end
+        
+        -- Phase 1: Move to home X,Z at current Y (stay high/low)
+        local intermediatePos = {
+            x = homePosition.x,
+            y = current.y,  -- Stay at current Y
+            z = homePosition.z
+        }
+        
+        print("Phase 1: Moving to X,Z coordinates...")
+        if not moveTo(intermediatePos) then
+            print("ERROR: Cannot reach home X,Z!")
+            return false
+        end
+        
+        -- Phase 2: Now descend/ascend to home Y
+        print("Phase 2: Moving to home Y level...")
+        if not moveTo(homePosition) then
+            print("ERROR: Cannot reach home Y!")
+            return false
+        end
+        
+        print("=== Home! ===")
+        saveId()
+        updateStatus("idle", "waiting")
+        return true
     end
     return false
 end
