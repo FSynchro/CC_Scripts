@@ -749,7 +749,29 @@ local function handleMessage(msg, sender)
     
     elseif msg.type == "rescan_altar" then
         print("Manual rescan requested for altar #" .. msg.data.altarId)
-        requestPedestalScan(msg.data.altarId)
+        
+        -- Find the altar and clear its layout
+        for _, altar in ipairs(altars) do
+            if altar.id == msg.data.altarId then
+                print("Clearing altar #" .. altar.id .. " layout...")
+                altar.pedestals = {}
+                altar.stabilizers = {}
+                altar.pedestalsScanned = false
+                altar.layoutConfirmed = false
+                
+                saveDatabase()
+                
+                -- Broadcast cleared status
+                broadcast("altar_layout_cleared", {
+                    altarId = altar.id
+                })
+                
+                -- Immediately trigger new scan
+                print("Triggering new scan...")
+                requestPedestalScan(msg.data.altarId)
+                break
+            end
+        end
     
     elseif msg.type == "add_recipe" then
         addRecipe(msg.data.catalyst, msg.data.ingredients)
