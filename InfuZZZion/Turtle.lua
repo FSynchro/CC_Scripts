@@ -4,8 +4,8 @@
 local CHANNEL = 1742
 local ID_FILE = "turtle_id.dat"
 local SCAN_DELAY = 0.5 -- Delay between each scan position (seconds)
-local MOVE_DELAY = 0.5 -- Delay after each movement
-local GPS_VERIFY_RETRIES = 1 -- Times to retry GPS at each position
+local MOVE_DELAY = 0.3 -- Delay after each movement
+local GPS_VERIFY_RETRIES = 3 -- Times to retry GPS at each position
 
 -- State
 local modem = peripheral.find("modem")
@@ -466,6 +466,10 @@ local function returnHome()
         print("Home!")
         saveId()
         updateStatus("idle", "waiting")
+        
+        -- Send keepalive immediately after arriving home
+        sendKeepalive()
+        
         return true
     end
     return false
@@ -815,6 +819,11 @@ local function processTasks()
     end
     
     updateStatus("idle", "waiting")
+    
+    -- CRITICAL: Send immediate keepalive after finishing tasks
+    -- (scanning blocks the main event loop, so timer doesn't fire)
+    sendKeepalive()
+    print("Tasks complete, sent keepalive to server")
 end
 
 -- Handle messages
