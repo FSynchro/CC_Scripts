@@ -586,10 +586,18 @@ local function handleTouch(x, y)
         
         -- Button area (right side, bottom)
         local gridX = listWidth + 3
-        local buttonY1 = 17  -- First button row
-        local buttonY2 = 18  -- Second button row
+        local gridY = 5  -- Where grid starts (after title and legend)
         
-        print("DEBUG: Button Y coordinates: buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2)
+        -- CRITICAL FIX: Calculate button Y positions same way as drawing code!
+        local statsY = gridY + 11  -- Same as in drawAltarsTab
+        statsY = statsY + 1  -- After "Pedestals:" line
+        statsY = statsY + 1  -- After "Stabilizers:" line
+        statsY = statsY + 2  -- Skip 2 lines (same as drawing code)
+        
+        local buttonY1 = statsY      -- First button (CONFIRM)
+        local buttonY2 = statsY + 1  -- Second button (RESCAN when not confirmed)
+        
+        print("DEBUG: Calculated button Y: buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2)
         print("DEBUG: Click x=" .. x .. " (gridX=" .. gridX .. "), y=" .. y)
         
         if selectedAltarId and x >= gridX then
@@ -662,7 +670,7 @@ local function handleTouch(x, y)
                         print("DEBUG: RESCAN conditions not met")
                     end
                 else
-                    print("DEBUG: No button matched at y=" .. y)
+                    print("DEBUG: No button matched at y=" .. y .. " (buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2 .. ")")
                 end
             else
                 print("DEBUG: selectedAltar is nil!")
