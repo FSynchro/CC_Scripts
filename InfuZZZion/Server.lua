@@ -20,7 +20,7 @@ local nextAltarId = 1
 local setupComplete = false
 local altarLastSeen = {}
 local turtleLastSeen = {}
-local KEEPALIVE_TIMEOUT = 30000
+local KEEPALIVE_TIMEOUT = 60000 -- 60 seconds (increased for long scans)
 
 -- Modem setup
 local modem = peripheral.find("modem")
