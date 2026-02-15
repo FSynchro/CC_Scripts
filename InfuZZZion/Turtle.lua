@@ -262,8 +262,10 @@ local function moveTo(target)
         return false
     end
     
-    -- Move X (reduced logging)
+    -- Move X (with auto-correction that doesn't double-turn)
     local xAttempts = 0
+    local justCorrected = false  -- Flag to skip turnToFace after correction
+    
     while xAttempts < MAX_AXIS_ATTEMPTS do
         local current = getPosition(true)
         if not current then
@@ -274,22 +276,29 @@ local function moveTo(target)
         if current.x == target.x then
             break
         elseif current.x < target.x then
-            turnToFace(1)  -- East
+            -- Only turn if we didn't just auto-correct
+            if not justCorrected then
+                turnToFace(1)  -- East
+            end
+            justCorrected = false  -- Reset flag
+            
             local beforeDist = math.abs(current.x - target.x)
             
             if moveForward() then
                 stuckCounter = 0
                 
-                -- Smart direction check (only log if wrong)
+                -- Smart direction check
                 local afterPos = getPosition(true)
                 if afterPos then
                     local afterDist = math.abs(afterPos.x - target.x)
                     if afterDist > beforeDist then
-                        print("WARNING: Wrong direction on X! Auto-correcting...")
+                        print("WARNING: Wrong direction on X! Turned around")
+                        -- Turn 180 degrees
                         turtle.turnRight()
                         turtle.turnRight()
                         facing = (facing + 2) % 4
                         sleep(MOVE_DELAY)
+                        justCorrected = true  -- Set flag to skip next turnToFace
                         xAttempts = xAttempts + 1
                     end
                 end
@@ -302,8 +311,14 @@ local function moveTo(target)
                 end
             end
             sendKeepalive()
+            
         elseif current.x > target.x then
-            turnToFace(3)  -- West
+            -- Only turn if we didn't just auto-correct
+            if not justCorrected then
+                turnToFace(3)  -- West
+            end
+            justCorrected = false  -- Reset flag
+            
             local beforeDist = math.abs(current.x - target.x)
             
             if moveForward() then
@@ -313,11 +328,13 @@ local function moveTo(target)
                 if afterPos then
                     local afterDist = math.abs(afterPos.x - target.x)
                     if afterDist > beforeDist then
-                        print("WARNING: Wrong direction on X! Auto-correcting...")
+                        print("WARNING: Wrong direction on X! Turned around")
+                        -- Turn 180 degrees
                         turtle.turnRight()
                         turtle.turnRight()
                         facing = (facing + 2) % 4
                         sleep(MOVE_DELAY)
+                        justCorrected = true  -- Set flag to skip next turnToFace
                         xAttempts = xAttempts + 1
                     end
                 end
@@ -338,8 +355,10 @@ local function moveTo(target)
         return false
     end
     
-    -- Move Z (reduced logging)
+    -- Move Z (with auto-correction that doesn't double-turn)
     local zAttempts = 0
+    local justCorrected = false  -- Flag to skip turnToFace after correction
+    
     while zAttempts < MAX_AXIS_ATTEMPTS do
         local current = getPosition(true)
         if not current then
@@ -350,7 +369,12 @@ local function moveTo(target)
         if current.z == target.z then
             break
         elseif current.z < target.z then
-            turnToFace(2)  -- South
+            -- Only turn if we didn't just auto-correct
+            if not justCorrected then
+                turnToFace(2)  -- South
+            end
+            justCorrected = false  -- Reset flag
+            
             local beforeDist = math.abs(current.z - target.z)
             
             if moveForward() then
@@ -361,11 +385,13 @@ local function moveTo(target)
                 if afterPos then
                     local afterDist = math.abs(afterPos.z - target.z)
                     if afterDist > beforeDist then
-                        print("WARNING: Wrong direction on Z! Auto-correcting...")
+                        print("WARNING: Wrong direction on Z! Turned around")
+                        -- Turn 180 degrees
                         turtle.turnRight()
                         turtle.turnRight()
                         facing = (facing + 2) % 4
                         sleep(MOVE_DELAY)
+                        justCorrected = true  -- Set flag
                         zAttempts = zAttempts + 1
                     end
                 end
@@ -378,8 +404,14 @@ local function moveTo(target)
                 end
             end
             sendKeepalive()
+            
         elseif current.z > target.z then
-            turnToFace(0)  -- North
+            -- Only turn if we didn't just auto-correct
+            if not justCorrected then
+                turnToFace(0)  -- North
+            end
+            justCorrected = false  -- Reset flag
+            
             local beforeDist = math.abs(current.z - target.z)
             
             if moveForward() then
@@ -389,11 +421,13 @@ local function moveTo(target)
                 if afterPos then
                     local afterDist = math.abs(afterPos.z - target.z)
                     if afterDist > beforeDist then
-                        print("WARNING: Wrong direction on Z! Auto-correcting...")
+                        print("WARNING: Wrong direction on Z! Turned around")
+                        -- Turn 180 degrees
                         turtle.turnRight()
                         turtle.turnRight()
                         facing = (facing + 2) % 4
                         sleep(MOVE_DELAY)
+                        justCorrected = true  -- Set flag
                         zAttempts = zAttempts + 1
                     end
                 end
