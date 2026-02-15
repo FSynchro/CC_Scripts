@@ -4,8 +4,8 @@
 local CHANNEL = 1742
 local ID_FILE = "turtle_id.dat"
 local SCAN_DELAY = 0.5 -- Delay between each scan position (seconds)
-local MOVE_DELAY = 0.3 -- Delay after each movement
-local GPS_VERIFY_RETRIES = 3 -- Times to retry GPS at each position
+local MOVE_DELAY = 0.5 -- Delay after each movement
+local GPS_VERIFY_RETRIES = 1 -- Times to retry GPS at each position
 
 -- State
 local modem = peripheral.find("modem")
