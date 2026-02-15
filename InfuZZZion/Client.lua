@@ -417,7 +417,9 @@ local function drawAltarsTab()
             
             -- Legend
             drawText(gridX, gridY, "G=Air B=Stab P=Ped C=Cat O=Pillar", COLOR_BG, colors.gray)
-            gridY = gridY + 2
+            gridY = gridY + 1
+            drawText(gridX, gridY, "Top=North Left=West", COLOR_BG, colors.gray)
+            gridY = gridY + 1
             
             -- Create position maps
             local pedestalMap = {}
@@ -445,25 +447,33 @@ local function drawAltarsTab()
             for z = -3, 3 do
                 for x = -3, 3 do
                     local posKey = x .. "," .. z
-                    local symbol = "G"
-                    local symbolColor = COLOR_AIR
+                    local symbol = "?"  -- Unknown by default
+                    local symbolColor = colors.gray
                     
                     if x == 0 and z == 0 then
                         symbol = "C"
                         symbolColor = COLOR_CATALYST
                     
-                    elseif (x == -2 and z == -2) or (x == -2 and z == 2) or 
-                           (x == 2 and z == -2) or (x == 2 and z == 2) then
+                    -- FIXED: Pillars at (±2, ±1) not (±2, ±2)
+                    elseif (x == -2 and z == -1) or (x == -2 and z == 1) or 
+                           (x == 2 and z == -1) or (x == 2 and z == 1) then
                         symbol = "O"
                         symbolColor = COLOR_PILLAR
                     
-                    elseif pedestalMap[posKey] then
-                        symbol = "P"
-                        symbolColor = COLOR_PEDESTAL
-                    
-                    elseif stabilizerMap[posKey] then
-                        symbol = "B"
-                        symbolColor = COLOR_STABILIZER
+                    -- Only show scan results if scanning is complete
+                    elseif selectedAltar.pedestalsScanned then
+                        if pedestalMap[posKey] then
+                            symbol = "P"
+                            symbolColor = COLOR_PEDESTAL
+                        
+                        elseif stabilizerMap[posKey] then
+                            symbol = "B"
+                            symbolColor = COLOR_STABILIZER
+                        
+                        else
+                            symbol = "G"  -- Air
+                            symbolColor = COLOR_AIR
+                        end
                     end
                     
                     drawText(gridX + x + 3, gridY + z + 3, symbol, COLOR_BG, symbolColor)
@@ -769,6 +779,15 @@ local function handleMessage(msg)
         
     elseif msg.type == "altar_confirmed" then
         showStatus("Altar #" .. msg.data.altarId .. " confirmed!")
+        draw()
+        
+    elseif msg.type == "altar_layout_cleared" then
+        showStatus("Altar #" .. msg.data.altarId .. " cleared, rescanning...")
+        -- Request fresh status to update display
+        modem.transmit(CHANNEL, CHANNEL, {
+            type = "request_status",
+            data = {}
+        })
         draw()
         
     elseif msg.type == "add_recipe_ack" then
