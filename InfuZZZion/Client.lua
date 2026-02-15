@@ -455,9 +455,9 @@ local function drawAltarsTab()
                         symbol = "C"
                         symbolColor = COLOR_CATALYST
                     
-                    -- FIXED: Pillars at (±1, ±2) - one block closer on X axis
-                    elseif (x == -1 and z == -2) or (x == -1 and z == 2) or 
-                           (x == 1 and z == -2) or (x == 1 and z == 2) then
+                    -- FIXED: Pillars DIRECTLY DIAGONAL from catalyst at (±1, ±1)
+                    elseif (x == -1 and z == -1) or (x == -1 and z == 1) or 
+                           (x == 1 and z == -1) or (x == 1 and z == 1) then
                         symbol = "O"
                         symbolColor = COLOR_PILLAR
                     
