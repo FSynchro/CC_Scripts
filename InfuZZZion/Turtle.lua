@@ -504,13 +504,63 @@ local function returnHome()
 end
 
 -- ============================================================
--- SECTION 8: SCANNING  (depends on: moveTo, doRefuel, returnHome)
+-- SECTION 8: BLOCK INSPECTION HELPERS
+--
+-- inspectBelow(targetPos):
+--   Moves to one block ABOVE targetPos, calls turtle.inspectDown(),
+--   returns (success, blockData). Used for both chest detection and
+--   pedestal scanning — the single place that knows about Y+1 geometry.
+--
+-- blockMatches(blockName, patterns):
+--   Case-insensitive substring match against a list of patterns.
+--   All "is this a chest / pedestal / stabilizer" logic lives here.
+-- ============================================================
+
+local function blockMatches(blockName, patterns)
+    if not blockName then return false end
+    local lower = blockName:lower()
+    for _, pattern in ipairs(patterns) do
+        if lower:find(pattern:lower()) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Pattern tables — edit these if mod block names differ
+local CHEST_PATTERNS      = {"chest"}
+local PEDESTAL_PATTERNS   = {"pedestal"}
+local STABILIZER_PATTERNS = {"skull", "head", "candle"}
+
+local function inspectBelow(targetPos)
+    local abovePos = {
+        x = targetPos.x,
+        y = targetPos.y + 1,
+        z = targetPos.z
+    }
+
+    if not moveTo(abovePos) then
+        print("  inspectBelow: could not reach above " .. textutils.serialize(targetPos))
+        return false, nil
+    end
+
+    sleep(SCAN_DELAY)
+    local success, block = turtle.inspectDown()
+    if success and block and block.name then
+        print("  inspectBelow " .. textutils.serialize(targetPos) .. " => " .. block.name)
+        return true, block
+    end
+
+    print("  inspectBelow " .. textutils.serialize(targetPos) .. " => (nothing)")
+    return false, nil
+end
+
+-- ============================================================
+-- SECTION 9: SCANNING  (depends on: moveTo, doRefuel, inspectBelow, blockMatches)
 -- ============================================================
 
 local function isStabilizer(blockName)
-    if not blockName then return false end
-    local lowerName = blockName:lower()
-    return lowerName:find("skull") or lowerName:find("head") or lowerName:find("candle")
+    return blockMatches(blockName, STABILIZER_PATTERNS)
 end
 
 local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
@@ -529,7 +579,6 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
     local foundPedestals = {}
     local foundStabilizers = {}
 
-    local flyingY = catalystPos.y + 2
     local totalFailed = 0
     local MAX_TOTAL_FAILURES = 10
     local aborted = false
@@ -541,61 +590,43 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
 
         for xOffset = -3, 3 do
             if not aborted then
-                -- Skip catalyst centre
                 if not (xOffset == 0 and zOffset == 0) then
 
-                    -- Mid-scan refuel check
                     if turtle.getFuelLevel() < REFUEL_THRESHOLD then
                         print("Fuel low during scan (" .. turtle.getFuelLevel() .. "), refuelling...")
                         if not doRefuel() then
-                            print("ERROR: Could not refuel during scan, continuing anyway")
+                            print("WARNING: Could not refuel during scan, continuing")
                         end
                     end
 
-                    local scanPos = {
+                    -- The block we want to inspect sits at catalystPos.y
+                    local targetPos = {
                         x = catalystPos.x + xOffset,
-                        y = flyingY,
+                        y = catalystPos.y,
                         z = catalystPos.z + zOffset
                     }
 
-                    if moveTo(scanPos) then
-                        local verifyPos = getPosition(true)
-                        if verifyPos
-                           and verifyPos.x == scanPos.x
-                           and verifyPos.y == scanPos.y
-                           and verifyPos.z == scanPos.z then
+                    -- inspectBelow handles the Y+1 positioning itself
+                    local found, block = inspectBelow(targetPos)
 
-                            sleep(SCAN_DELAY)
+                    if found then
+                        local posKey = targetPos.x .. "," .. targetPos.y .. "," .. targetPos.z
 
-                            local success, block = turtle.inspectDown()
-                            if success and block.name then
-                                local itemPos = {
-                                    x = verifyPos.x,
-                                    y = verifyPos.y - 1,
-                                    z = verifyPos.z
-                                }
-                                local posKey = itemPos.x .. "," .. itemPos.y .. "," .. itemPos.z
-
-                                if block.name:find("edestal") then
-                                    if not foundPedestals[posKey] then
-                                        foundPedestals[posKey] = true
-                                        table.insert(pedestals, itemPos)
-                                        print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
-                                    end
-                                elseif isStabilizer(block.name) then
-                                    if not foundStabilizers[posKey] then
-                                        foundStabilizers[posKey] = true
-                                        table.insert(stabilizers, itemPos)
-                                        print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
-                                    end
-                                end
+                        if blockMatches(block.name, PEDESTAL_PATTERNS) then
+                            if not foundPedestals[posKey] then
+                                foundPedestals[posKey] = true
+                                table.insert(pedestals, targetPos)
+                                print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
                             end
-
-                            sendKeepalive()
-                        else
-                            totalFailed = totalFailed + 1
+                        elseif blockMatches(block.name, STABILIZER_PATTERNS) then
+                            if not foundStabilizers[posKey] then
+                                foundStabilizers[posKey] = true
+                                table.insert(stabilizers, targetPos)
+                                print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
+                            end
                         end
                     else
+                        -- inspectBelow returning false means moveTo failed
                         totalFailed = totalFailed + 1
                         print("  Skipped [" .. xOffset .. "," .. zOffset .. "] (" .. totalFailed .. "/" .. MAX_TOTAL_FAILURES .. ")")
                         if totalFailed >= MAX_TOTAL_FAILURES then
@@ -603,6 +634,8 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                             aborted = true
                         end
                     end
+
+                    sendKeepalive()
                 end
             end
         end
@@ -882,20 +915,23 @@ local function processTasks()
 end
 
 -- ============================================================
--- SECTION 10.5: CHEST/ME DISCOVERY
--- Called once after registration. Moves to 2 above the server computer,
--- then checks each of the 4 cardinal neighbours by dipping to Y+1 and
--- inspecting the block below. Once the chest is found the ME interface
--- is assumed to be one block further in the same direction.
--- Reports results back to the server via "chest_found".
+-- SECTION 10.6: CHEST/ME DISCOVERY
+--
+-- Layout assumption (confirmed by you):
+--   server computer  →  chest (1 block to one side)
+--                    →  ME interface (1 block further, same axis)
+--
+-- Strategy: hover 1 block above each of the 4 cardinal neighbours of
+-- the server at the server's Y level, call inspectBelow on that
+-- neighbour. When we find the chest, the ME interface is one step
+-- further in the same direction.
 -- ============================================================
 
--- Offsets for North/East/South/West: {dx, dz}
 local CARDINAL_OFFSETS = {
-    {dx =  0, dz = -1},  -- North
-    {dx =  1, dz =  0},  -- East
-    {dx =  0, dz =  1},  -- South
-    {dx = -1, dz =  0},  -- West
+    {dx =  0, dz = -1, name = "North"},
+    {dx =  1, dz =  0, name = "East"},
+    {dx =  0, dz =  1, name = "South"},
+    {dx = -1, dz =  0, name = "West"},
 }
 
 local function findChestAroundServer(serverPos)
@@ -906,78 +942,48 @@ local function findChestAroundServer(serverPos)
 
     updateStatus("searching", "finding chest")
 
-    -- Hover point: 2 above the server
-    local hoverPos = {
-        x = serverPos.x,
-        y = serverPos.y + 2,
-        z = serverPos.z
-    }
-
     for _, offset in ipairs(CARDINAL_OFFSETS) do
-        -- Return to hover above server before each side check
-        if not moveTo(hoverPos) then
-            print("ERROR: Cannot reach hover position above server!")
-            return false
-        end
+        print("Checking " .. offset.name .. " side...")
 
-        -- Move to the side at Y+1 (one below hover) so inspectDown
-        -- looks at the server's Y level
-        local sidePos = {
+        -- The candidate chest sits at the server's Y, one step to the side
+        local candidatePos = {
             x = serverPos.x + offset.dx,
-            y = serverPos.y + 1,
+            y = serverPos.y,
             z = serverPos.z + offset.dz
         }
 
-        if moveTo(sidePos) then
-            local success, block = turtle.inspectDown()
-            if success and block.name then
-                print("  Side [" .. offset.dx .. "," .. offset.dz .. "]: " .. block.name)
+        -- inspectBelow moves to candidatePos.y+1 = serverPos.y+1, directly
+        -- above the candidate, and looks straight down — exactly at serverPos.y.
+        local found, block = inspectBelow(candidatePos)
 
-                if block.name:find("chest") or block.name:find("Chest") then
-                    -- Found the chest
-                    local foundChest = {
-                        x = serverPos.x + offset.dx,
-                        y = serverPos.y,
-                        z = serverPos.z + offset.dz
-                    }
-                    -- ME interface is one block further in the same direction
-                    local foundME = {
-                        x = serverPos.x + offset.dx * 2,
-                        y = serverPos.y,
-                        z = serverPos.z + offset.dz * 2
-                    }
+        if found and blockMatches(block.name, CHEST_PATTERNS) then
+            local foundME = {
+                x = serverPos.x + offset.dx * 2,
+                y = serverPos.y,
+                z = serverPos.z + offset.dz * 2
+            }
 
-                    print("FOUND CHEST at " .. textutils.serialize(foundChest))
-                    print("ME interface at " .. textutils.serialize(foundME))
+            print("FOUND CHEST at "       .. textutils.serialize(candidatePos))
+            print("ME interface should be " .. textutils.serialize(foundME))
 
-                    chestPosition = foundChest
+            chestPosition      = candidatePos
+            meInterfacePosition = foundME
+
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "chest_found",
+                data = {
+                    turtleId           = assignedId,
+                    chestPosition      = candidatePos,
                     meInterfacePosition = foundME
+                }
+            })
 
-                    -- Report to server
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "chest_found",
-                        data = {
-                            turtleId = assignedId,
-                            chestPosition = foundChest,
-                            meInterfacePosition = foundME
-                        }
-                    })
-
-                    -- Return to hover then home
-                    moveTo(hoverPos)
-                    return true
-                end
-            else
-                print("  Side [" .. offset.dx .. "," .. offset.dz .. "]: empty")
-            end
-        else
-            print("  WARNING: Could not reach side [" .. offset.dx .. "," .. offset.dz .. "]")
+            return true
         end
     end
 
-    -- Return to hover before giving up
-    moveTo(hoverPos)
     print("ERROR: No chest found around server!")
+    print("Make sure a chest is placed directly beside the server computer.")
     return false
 end
 
