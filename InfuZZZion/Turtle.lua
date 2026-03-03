@@ -899,6 +899,106 @@ local function processTasks()
 end
 
 -- ============================================================
+-- SECTION 10.5: CHEST/ME DISCOVERY
+-- Called once after registration. Moves to 2 above the server computer,
+-- then checks each of the 4 cardinal neighbours by dipping to Y+1 and
+-- inspecting the block below. Once the chest is found the ME interface
+-- is assumed to be one block further in the same direction.
+-- Reports results back to the server via "chest_found".
+-- ============================================================
+
+-- Offsets for North/East/South/West: {dx, dz}
+local CARDINAL_OFFSETS = {
+    {dx =  0, dz = -1},  -- North
+    {dx =  1, dz =  0},  -- East
+    {dx =  0, dz =  1},  -- South
+    {dx = -1, dz =  0},  -- West
+}
+
+local function findChestAroundServer(serverPos)
+    print("=================================")
+    print("SEARCHING FOR CHEST/ME INTERFACE")
+    print("Server pos: " .. textutils.serialize(serverPos))
+    print("=================================")
+
+    updateStatus("searching", "finding chest")
+
+    -- Hover point: 2 above the server
+    local hoverPos = {
+        x = serverPos.x,
+        y = serverPos.y + 2,
+        z = serverPos.z
+    }
+
+    for _, offset in ipairs(CARDINAL_OFFSETS) do
+        -- Return to hover above server before each side check
+        if not moveTo(hoverPos) then
+            print("ERROR: Cannot reach hover position above server!")
+            return false
+        end
+
+        -- Move to the side at Y+1 (one below hover) so inspectDown
+        -- looks at the server's Y level
+        local sidePos = {
+            x = serverPos.x + offset.dx,
+            y = serverPos.y + 1,
+            z = serverPos.z + offset.dz
+        }
+
+        if moveTo(sidePos) then
+            local success, block = turtle.inspectDown()
+            if success and block.name then
+                print("  Side [" .. offset.dx .. "," .. offset.dz .. "]: " .. block.name)
+
+                if block.name:find("chest") or block.name:find("Chest") then
+                    -- Found the chest
+                    local foundChest = {
+                        x = serverPos.x + offset.dx,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz
+                    }
+                    -- ME interface is one block further in the same direction
+                    local foundME = {
+                        x = serverPos.x + offset.dx * 2,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz * 2
+                    }
+
+                    print("FOUND CHEST at " .. textutils.serialize(foundChest))
+                    print("ME interface at " .. textutils.serialize(foundME))
+
+                    chestPosition = foundChest
+                    meInterfacePosition = foundME
+
+                    -- Report to server
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "chest_found",
+                        data = {
+                            turtleId = assignedId,
+                            chestPosition = foundChest,
+                            meInterfacePosition = foundME
+                        }
+                    })
+
+                    -- Return to hover then home
+                    moveTo(hoverPos)
+                    return true
+                end
+            else
+                print("  Side [" .. offset.dx .. "," .. offset.dz .. "]: empty")
+            end
+        else
+            print("  WARNING: Could not reach side [" .. offset.dx .. "," .. offset.dz .. "]")
+        end
+    end
+
+    -- Return to hover before giving up
+    moveTo(hoverPos)
+    print("ERROR: No chest found around server!")
+    return false
+end
+
+-- ============================================================
 -- SECTION 11: MESSAGE HANDLING
 -- ============================================================
 
@@ -908,20 +1008,35 @@ local function handleMessage(msg)
     if msg.type == "turtle_id_assigned" then
         if msg.data.computerId == computerID then
             assignedId = msg.data.assignedId
-            chestPosition = msg.data.chestPosition
-            meInterfacePosition = msg.data.meInterfacePosition
+            -- chestPosition and meInterfacePosition are NOT sent from server anymore.
+            -- The turtle discovers them itself via findChestAroundServer().
 
             saveId()
 
             print("")
             print("=================================")
             print("Assigned ID: #" .. assignedId)
-            print("Chest:  " .. textutils.serialize(chestPosition))
-            print("ME:     " .. textutils.serialize(meInterfacePosition))
             print("Fuel:   " .. turtle.getFuelLevel())
             print("=================================")
 
-            -- Top up immediately so we are ready for the first task
+            -- If server already knows chest position (e.g. from a previous turtle
+            -- that reported it), it sends it along so we skip the scan.
+            if msg.data.chestPosition then
+                chestPosition = msg.data.chestPosition
+                meInterfacePosition = msg.data.meInterfacePosition
+                print("Chest pos from server: " .. textutils.serialize(chestPosition))
+                print("ME pos from server:    " .. textutils.serialize(meInterfacePosition))
+            elseif msg.data.serverPosition then
+                -- Need to discover it ourselves
+                print("Discovering chest/ME around server...")
+                if not findChestAroundServer(msg.data.serverPosition) then
+                    print("ERROR: Could not find chest! Tasks will fail until chest is found.")
+                end
+            else
+                print("WARNING: No server position provided, chest location unknown.")
+            end
+
+            -- Top up fuel now that we (may) know where the chest is
             if turtle.getFuelLevel() < MIN_FUEL then
                 print("Fuel below minimum, refuelling now...")
                 doRefuel()
