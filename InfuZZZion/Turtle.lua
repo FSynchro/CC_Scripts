@@ -181,9 +181,30 @@ end
 
 -- ============================================================
 -- SECTION 5: moveTo
--- NOTE: moveTo does NOT call doRefuel to avoid circular dependency.
--- ensureFuel() must be called by higher-level functions before moveTo.
+--
+-- Design principles:
+--   1. GPS is the single source of truth. We never dead-reckon.
+--   2. After every successful moveForward(), we take a GPS reading and
+--      derive the direction we ACTUALLY moved. This updates `facing` to
+--      match reality, so turnToFace() always has a correct baseline.
+--   3. No "justCorrected" flag needed — because `facing` is always correct
+--      after a move, turnToFace() will simply do the right thing next time.
+--   4. MAX_STEPS is based on Manhattan distance so long paths never time out.
+--
+-- Facing convention: 0=North(-Z), 1=East(+X), 2=South(+Z), 3=West(-X)
 -- ============================================================
+
+-- Derive the facing we must have had when we moved from `before` to `after`.
+-- Returns nil if the move didn't change X or Z (i.e. Y move or no move).
+local function facingFromMove(before, after)
+    local dx = after.x - before.x
+    local dz = after.z - before.z
+    if dx == 1  then return 1 end  -- East
+    if dx == -1 then return 3 end  -- West
+    if dz == 1  then return 2 end  -- South
+    if dz == -1 then return 0 end  -- North
+    return nil  -- no horizontal movement detected
+end
 
 local function moveTo(target)
     if turtle.getFuelLevel() == 0 then
@@ -191,169 +212,128 @@ local function moveTo(target)
         return false
     end
 
-    local startPos = getPosition(true)
-    if not startPos then
+    local pos = getPosition(true)
+    if not pos then
         print("ERROR: Cannot get GPS position!")
         return false
     end
 
     print("Moving to " .. textutils.serialize(target))
 
-    local MAX_AXIS_ATTEMPTS = 5
-    local stuckCounter
+    -- Max steps = Manhattan distance + generous buffer for obstacle detours
+    local maxSteps = math.abs(target.x - pos.x)
+                   + math.abs(target.y - pos.y)
+                   + math.abs(target.z - pos.z)
+    maxSteps = maxSteps * 4 + 16   -- 4x buffer plus flat minimum
+    local steps = 0
+    local stuckCount = 0
 
-    -- ---- Y axis ----
-    stuckCounter = 0
-    local yAttempts = 0
-    while yAttempts < MAX_AXIS_ATTEMPTS do
-        local current = getPosition(true)
-        if not current then print("ERROR: Lost GPS!") return false end
-        if current.y == target.y then break end
+    while steps < maxSteps do
+        pos = getPosition(true)
+        if not pos then print("ERROR: Lost GPS!") return false end
 
-        if current.y < target.y then
-            if moveUp() then
-                stuckCounter = 0
-            else
-                yAttempts = yAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck moving UP!") return false end
-            end
-        else
-            if moveDown() then
-                stuckCounter = 0
-            else
-                yAttempts = yAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck moving DOWN!") return false end
-            end
-        end
-        sendKeepalive()
-    end
-    if yAttempts >= MAX_AXIS_ATTEMPTS then print("ERROR: Cannot reach target Y") return false end
-
-    -- ---- X axis ----
-    stuckCounter = 0
-    local xAttempts = 0
-    local justCorrected = false
-    while xAttempts < MAX_AXIS_ATTEMPTS do
-        local current = getPosition(true)
-        if not current then print("ERROR: Lost GPS!") return false end
-        if current.x == target.x then break end
-
-        if current.x < target.x then
-            if not justCorrected then turnToFace(1) end
-            justCorrected = false
-            local beforeDist = math.abs(current.x - target.x)
-            if moveForward() then
-                stuckCounter = 0
-                local afterPos = getPosition(true)
-                if afterPos and math.abs(afterPos.x - target.x) > beforeDist then
-                    print("WARNING: Wrong direction on X!")
-                    turtle.turnRight() turtle.turnRight()
-                    facing = (facing + 2) % 4
-                    sleep(MOVE_DELAY)
-                    justCorrected = true
-                    xAttempts = xAttempts + 1
-                end
-            else
-                xAttempts = xAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck EAST!") return false end
-            end
-        else
-            if not justCorrected then turnToFace(3) end
-            justCorrected = false
-            local beforeDist = math.abs(current.x - target.x)
-            if moveForward() then
-                stuckCounter = 0
-                local afterPos = getPosition(true)
-                if afterPos and math.abs(afterPos.x - target.x) > beforeDist then
-                    print("WARNING: Wrong direction on X!")
-                    turtle.turnRight() turtle.turnRight()
-                    facing = (facing + 2) % 4
-                    sleep(MOVE_DELAY)
-                    justCorrected = true
-                    xAttempts = xAttempts + 1
-                end
-            else
-                xAttempts = xAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck WEST!") return false end
-            end
-        end
-        sendKeepalive()
-    end
-    if xAttempts >= MAX_AXIS_ATTEMPTS then print("ERROR: Cannot reach target X") return false end
-
-    -- ---- Z axis ----
-    stuckCounter = 0
-    local zAttempts = 0
-    justCorrected = false
-    while zAttempts < MAX_AXIS_ATTEMPTS do
-        local current = getPosition(true)
-        if not current then print("ERROR: Lost GPS!") return false end
-        if current.z == target.z then break end
-
-        if current.z < target.z then
-            if not justCorrected then turnToFace(2) end
-            justCorrected = false
-            local beforeDist = math.abs(current.z - target.z)
-            if moveForward() then
-                stuckCounter = 0
-                local afterPos = getPosition(true)
-                if afterPos and math.abs(afterPos.z - target.z) > beforeDist then
-                    print("WARNING: Wrong direction on Z!")
-                    turtle.turnRight() turtle.turnRight()
-                    facing = (facing + 2) % 4
-                    sleep(MOVE_DELAY)
-                    justCorrected = true
-                    zAttempts = zAttempts + 1
-                end
-            else
-                zAttempts = zAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck SOUTH!") return false end
-            end
-        else
-            if not justCorrected then turnToFace(0) end
-            justCorrected = false
-            local beforeDist = math.abs(current.z - target.z)
-            if moveForward() then
-                stuckCounter = 0
-                local afterPos = getPosition(true)
-                if afterPos and math.abs(afterPos.z - target.z) > beforeDist then
-                    print("WARNING: Wrong direction on Z!")
-                    turtle.turnRight() turtle.turnRight()
-                    facing = (facing + 2) % 4
-                    sleep(MOVE_DELAY)
-                    justCorrected = true
-                    zAttempts = zAttempts + 1
-                end
-            else
-                zAttempts = zAttempts + 1
-                stuckCounter = stuckCounter + 1
-                if stuckCounter >= 3 then print("ERROR: Stuck NORTH!") return false end
-            end
-        end
-        sendKeepalive()
-    end
-    if zAttempts >= MAX_AXIS_ATTEMPTS then print("ERROR: Cannot reach target Z") return false end
-
-    -- Final GPS verification
-    local finalPos = getPosition(true)
-    if finalPos then
-        currentPosition = finalPos
-        if finalPos.x == target.x and finalPos.y == target.y and finalPos.z == target.z then
+        -- Check if we have arrived
+        if pos.x == target.x and pos.y == target.y and pos.z == target.z then
             return true
-        else
-            print("ERROR: Position mismatch!")
-            print("  Target: " .. textutils.serialize(target))
-            print("  Actual: " .. textutils.serialize(finalPos))
-            return false
         end
+
+        -- Decide which axis to work on (Y first for safety overhead, then X, then Z)
+        if pos.y ~= target.y then
+            -- Vertical movement — no facing involved
+            local prevY = pos.y
+            if pos.y < target.y then
+                if not moveUp() then
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck on Y axis!") return false end
+                else
+                    stuckCount = 0
+                    steps = steps + 1
+                end
+            else
+                if not moveDown() then
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck on Y axis!") return false end
+                else
+                    stuckCount = 0
+                    steps = steps + 1
+                end
+            end
+
+        elseif pos.x ~= target.x then
+            -- Need to move on X axis
+            local wantFacing = pos.x < target.x and 1 or 3
+            turnToFace(wantFacing)
+
+            local before = getPosition(true)
+            if not before then print("ERROR: Lost GPS before X move!") return false end
+
+            if moveForward() then
+                steps = steps + 1
+                stuckCount = 0
+
+                -- Learn actual facing from where GPS says we ended up
+                local after = getPosition(true)
+                if after then
+                    local actualFacing = facingFromMove(before, after)
+                    if actualFacing then
+                        if actualFacing ~= wantFacing then
+                            -- We moved in the wrong horizontal direction.
+                            -- Update facing to reality so turnToFace corrects next iteration.
+                            print("Orientation corrected: was " .. facing .. " actually " .. actualFacing)
+                            facing = actualFacing
+                        else
+                            facing = actualFacing
+                        end
+                    end
+                    pos = after
+                end
+            else
+                stuckCount = stuckCount + 1
+                if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
+            end
+
+        elseif pos.z ~= target.z then
+            -- Need to move on Z axis
+            local wantFacing = pos.z < target.z and 2 or 0
+            turnToFace(wantFacing)
+
+            local before = getPosition(true)
+            if not before then print("ERROR: Lost GPS before Z move!") return false end
+
+            if moveForward() then
+                steps = steps + 1
+                stuckCount = 0
+
+                -- Learn actual facing from GPS delta
+                local after = getPosition(true)
+                if after then
+                    local actualFacing = facingFromMove(before, after)
+                    if actualFacing then
+                        if actualFacing ~= wantFacing then
+                            print("Orientation corrected: was " .. facing .. " actually " .. actualFacing)
+                            facing = actualFacing
+                        else
+                            facing = actualFacing
+                        end
+                    end
+                    pos = after
+                end
+            else
+                stuckCount = stuckCount + 1
+                if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
+            end
+        end
+
+        sendKeepalive()
     end
 
-    print("ERROR: GPS verification failed!")
+    -- Ran out of steps — report where we ended up
+    pos = getPosition(true)
+    print("ERROR: moveTo exceeded max steps!")
+    if pos then
+        print("  Target: " .. textutils.serialize(target))
+        print("  Actual: " .. textutils.serialize(pos))
+    end
     return false
 end
 
@@ -420,18 +400,21 @@ local function refuelFromSlot()
 end
 
 local function doRefuel()
-    if not chestPosition then
-        print("ERROR: No chest position known, cannot refuel!")
+    -- Refuel from the ME interface, which holds coal/charcoal as a fuel source.
+    -- The ingredient chest is NOT used for refuelling.
+    local refuelPos = meInterfacePosition
+    if not refuelPos then
+        print("ERROR: ME interface position not known yet, cannot refuel!")
         return false
     end
 
     if turtle.getFuelLevel() == 0 then
-        print("CRITICAL: Zero fuel, cannot move to chest!")
+        print("CRITICAL: Zero fuel, cannot move to ME interface!")
         return false
     end
 
-    print("LOW FUEL (" .. turtle.getFuelLevel() .. ") - heading to chest to refuel...")
-    updateStatus("refuelling", "going to chest")
+    print("LOW FUEL (" .. turtle.getFuelLevel() .. ") - heading to ME interface to refuel...")
+    updateStatus("refuelling", "going to ME interface")
 
     -- Safety: make sure REFUEL_SLOT has no stray non-fuel item
     local existing = turtle.getItemDetail(REFUEL_SLOT)
@@ -441,25 +424,25 @@ local function doRefuel()
         return false
     end
 
-    local chestAbovePos = {
-        x = chestPosition.x,
-        y = chestPosition.y + 1,
-        z = chestPosition.z
+    local meAbovePos = {
+        x = refuelPos.x,
+        y = refuelPos.y + 1,
+        z = refuelPos.z
     }
 
-    if not moveTo(chestAbovePos) then
-        print("ERROR: Cannot reach chest to refuel!")
+    if not moveTo(meAbovePos) then
+        print("ERROR: Cannot reach ME interface to refuel!")
         return false
     end
 
-    local chest = peripheral.wrap("bottom")
-    if not chest or not chest.list then
-        print("ERROR: No chest found below refuel position!")
+    local me = peripheral.wrap("bottom")
+    if not me or not me.list then
+        print("ERROR: No ME interface found below refuel position!")
         return false
     end
 
-    if not findFuelInChest(chest) then
-        print("ERROR: No fuel items found in chest!")
+    if not findFuelInChest(me) then
+        print("ERROR: No fuel items (coal/charcoal) found in ME interface!")
         return false
     end
 
