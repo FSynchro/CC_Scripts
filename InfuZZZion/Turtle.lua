@@ -917,21 +917,24 @@ end
 -- ============================================================
 -- SECTION 10.6: CHEST/ME DISCOVERY
 --
--- Layout assumption (confirmed by you):
---   server computer  →  chest (1 block to one side)
---                    →  ME interface (1 block further, same axis)
+-- Layout: server → chest (1 block to one side) → ME interface (1 further)
 --
--- Strategy: hover 1 block above each of the 4 cardinal neighbours of
--- the server at the server's Y level, call inspectBelow on that
--- neighbour. When we find the chest, the ME interface is one step
--- further in the same direction.
+-- The block directly above the server is occupied, so we must never
+-- route through serverPos.y+1 above the server itself.
+--
+-- Strategy: for each cardinal direction, approach from 2 blocks out
+-- at serverPos.y+1 (safely beside the server, not above it), then
+-- use turtle.inspect() to look horizontally at the candidate chest
+-- position which is 1 block ahead at the same Y.
+-- We never fly over or through the server's occupied airspace.
+-- After the scan (found or not) we return home.
 -- ============================================================
 
 local CARDINAL_OFFSETS = {
-    {dx =  0, dz = -1, name = "North"},
-    {dx =  1, dz =  0, name = "East"},
-    {dx =  0, dz =  1, name = "South"},
-    {dx = -1, dz =  0, name = "West"},
+    {dx =  0, dz = -1, name = "North", face = 0},
+    {dx =  1, dz =  0, name = "East",  face = 1},
+    {dx =  0, dz =  1, name = "South", face = 2},
+    {dx = -1, dz =  0, name = "West",  face = 3},
 }
 
 local function findChestAroundServer(serverPos)
@@ -942,49 +945,80 @@ local function findChestAroundServer(serverPos)
 
     updateStatus("searching", "finding chest")
 
+    local foundChest = nil
+    local foundME    = nil
+
     for _, offset in ipairs(CARDINAL_OFFSETS) do
         print("Checking " .. offset.name .. " side...")
 
-        -- The candidate chest sits at the server's Y, one step to the side
-        local candidatePos = {
-            x = serverPos.x + offset.dx,
-            y = serverPos.y,
-            z = serverPos.z + offset.dz
+        -- Approach position: 2 blocks out from the server in this direction,
+        -- at serverPos.y+1. This is always clear — it's outside the server
+        -- structure and the occupied block above the server is not in the path.
+        local approachPos = {
+            x = serverPos.x + offset.dx * 2,
+            y = serverPos.y + 1,
+            z = serverPos.z + offset.dz * 2,
         }
 
-        -- inspectBelow moves to candidatePos.y+1 = serverPos.y+1, directly
-        -- above the candidate, and looks straight down — exactly at serverPos.y.
-        local found, block = inspectBelow(candidatePos)
+        if moveTo(approachPos) then
+            -- Face toward the server (opposite of the offset direction)
+            -- so inspect() looks at the candidate block 1 step ahead
+            -- which is serverPos + offset (the chest slot).
+            local faceTowardServer = (offset.face + 2) % 4
+            turnToFace(faceTowardServer)
+            sleep(SCAN_DELAY)
 
-        if found and blockMatches(block.name, CHEST_PATTERNS) then
-            local foundME = {
-                x = serverPos.x + offset.dx * 2,
-                y = serverPos.y,
-                z = serverPos.z + offset.dz * 2
-            }
+            local success, block = turtle.inspect()
+            if success and block and block.name then
+                print("  " .. offset.name .. ": " .. block.name)
 
-            print("FOUND CHEST at "       .. textutils.serialize(candidatePos))
-            print("ME interface should be " .. textutils.serialize(foundME))
+                if blockMatches(block.name, CHEST_PATTERNS) then
+                    foundChest = {
+                        x = serverPos.x + offset.dx,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz,
+                    }
+                    foundME = {
+                        x = serverPos.x + offset.dx * 2,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz * 2,
+                    }
 
-            chestPosition      = candidatePos
-            meInterfacePosition = foundME
+                    print("FOUND CHEST at "        .. textutils.serialize(foundChest))
+                    print("ME interface assumed at " .. textutils.serialize(foundME))
 
-            modem.transmit(CHANNEL, CHANNEL, {
-                type = "chest_found",
-                data = {
-                    turtleId           = assignedId,
-                    chestPosition      = candidatePos,
+                    chestPosition       = foundChest
                     meInterfacePosition = foundME
-                }
-            })
 
-            return true
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "chest_found",
+                        data = {
+                            turtleId            = assignedId,
+                            chestPosition       = foundChest,
+                            meInterfacePosition = foundME,
+                        }
+                    })
+
+                    break
+                end
+            else
+                print("  " .. offset.name .. ": (nothing)")
+            end
+        else
+            print("  WARNING: Could not reach approach position for " .. offset.name)
         end
     end
 
-    print("ERROR: No chest found around server!")
-    print("Make sure a chest is placed directly beside the server computer.")
-    return false
+    -- Always go home regardless of outcome
+    returnHome()
+
+    if foundChest then
+        return true
+    else
+        print("ERROR: No chest found around server!")
+        print("Make sure a chest is placed directly beside the server computer.")
+        return false
+    end
 end
 
 -- ============================================================
