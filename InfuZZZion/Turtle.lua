@@ -957,10 +957,9 @@ local function findChestAroundServer(serverPos)
     for _, offset in ipairs(CARDINAL_OFFSETS) do
         print("Checking " .. offset.name .. " side...")
 
-        -- Approach position: 2 blocks out from the server in this direction,
-        -- at serverPos.y+2. Flying at y+2 clears the server block and any
-        -- structure on top of it when travelling between scan positions.
-        -- We then descend to y+1 to do the horizontal inspect().
+        -- Transit at serverPos.y+2 to clear the server block and any structure
+        -- on top of it when travelling between scan positions.
+        -- Descend to serverPos.y (same level as the chest) to do the inspect.
         local approachPos = {
             x = serverPos.x + offset.dx * 2,
             y = serverPos.y + 2,
@@ -968,7 +967,7 @@ local function findChestAroundServer(serverPos)
         }
         local inspectPos = {
             x = serverPos.x + offset.dx * 2,
-            y = serverPos.y + 1,
+            y = serverPos.y,
             z = serverPos.z + offset.dz * 2,
         }
 
