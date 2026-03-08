@@ -220,21 +220,42 @@ local function moveTo(target)
 
     print("Moving to " .. textutils.serialize(target))
 
-    -- Max steps = Manhattan distance + generous buffer for obstacle detours
-    local maxSteps = math.abs(target.x - pos.x)
+    -- Instead of a fixed step budget calculated once at the start (which fails
+    -- if the turtle overshoots and has to backtrack), we track how many
+    -- consecutive iterations make NO progress toward the target. If the
+    -- remaining Manhattan distance doesn't shrink for MAX_IDLE iterations,
+    -- we declare it stuck and bail out.
+    local MAX_IDLE = 16
+    local idleCount = 0
+    local lastDist = math.abs(target.x - pos.x)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
-    maxSteps = maxSteps * 4 + 16   -- 4x buffer plus flat minimum
-    local steps = 0
     local stuckCount = 0
 
-    while steps < maxSteps do
+    while true do
         pos = getPosition(true)
         if not pos then print("ERROR: Lost GPS!") return false end
 
         -- Check if we have arrived
         if pos.x == target.x and pos.y == target.y and pos.z == target.z then
             return true
+        end
+
+        -- Check progress: if Manhattan distance shrank we're making headway
+        local dist = math.abs(target.x - pos.x)
+                   + math.abs(target.y - pos.y)
+                   + math.abs(target.z - pos.z)
+        if dist < lastDist then
+            idleCount = 0
+            lastDist = dist
+        else
+            idleCount = idleCount + 1
+            if idleCount >= MAX_IDLE then
+                print("ERROR: moveTo exceeded max steps!")
+                print("  Target: " .. textutils.serialize(target))
+                print("  Actual: " .. textutils.serialize(pos))
+                return false
+            end
         end
 
         -- Decide which axis to work on:
@@ -246,7 +267,6 @@ local function moveTo(target)
                 if stuckCount >= 5 then print("ERROR: Stuck going up!") return false end
             else
                 stuckCount = 0
-                steps = steps + 1
             end
 
         elseif pos.x ~= target.x then
@@ -258,7 +278,6 @@ local function moveTo(target)
             if not before then print("ERROR: Lost GPS before X move!") return false end
 
             if moveForward() then
-                steps = steps + 1
                 stuckCount = 0
 
                 -- Learn actual facing from where GPS says we ended up
@@ -291,7 +310,6 @@ local function moveTo(target)
             if not before then print("ERROR: Lost GPS before Z move!") return false end
 
             if moveForward() then
-                steps = steps + 1
                 stuckCount = 0
 
                 -- Learn actual facing from GPS delta
@@ -320,21 +338,11 @@ local function moveTo(target)
                 if stuckCount >= 5 then print("ERROR: Stuck going down!") return false end
             else
                 stuckCount = 0
-                steps = steps + 1
             end
         end
 
         sendKeepalive()
     end
-
-    -- Ran out of steps — report where we ended up
-    pos = getPosition(true)
-    print("ERROR: moveTo exceeded max steps!")
-    if pos then
-        print("  Target: " .. textutils.serialize(target))
-        print("  Actual: " .. textutils.serialize(pos))
-    end
-    return false
 end
 
 -- ============================================================
