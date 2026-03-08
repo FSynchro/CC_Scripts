@@ -537,6 +537,7 @@ end
 local CHEST_PATTERNS      = {"chest"}
 local PEDESTAL_PATTERNS   = {"pedestal"}
 local STABILIZER_PATTERNS = {"skull", "head", "candle"}
+local ME_INTERFACE_PATTERNS = {"me_interface", "interface", "appeng", "ae2"}
 
 local function inspectBelow(targetPos)
     local abovePos = {
@@ -957,66 +958,68 @@ local function findChestAroundServer(serverPos)
     for _, offset in ipairs(CARDINAL_OFFSETS) do
         print("Checking " .. offset.name .. " side...")
 
-        -- Transit at serverPos.y+2 to clear the server block and any structure
-        -- on top of it when travelling between scan positions.
-        -- Descend to serverPos.y (same level as the chest) to do the inspect.
+        -- Transit at serverPos.y+2 to clear the server and its top block.
+        -- Then descend to serverPos.y+1 (hover above the ME interface slot)
+        -- and use inspectDown() to identify what is below without landing on it.
+        -- If the block below is the ME interface, the chest must be 1 block
+        -- closer to the server (serverPos + offset * 1).
         local approachPos = {
             x = serverPos.x + offset.dx * 2,
             y = serverPos.y + 2,
             z = serverPos.z + offset.dz * 2,
         }
-        local inspectPos = {
+        local hoverPos = {
             x = serverPos.x + offset.dx * 2,
-            y = serverPos.y,
+            y = serverPos.y + 1,
             z = serverPos.z + offset.dz * 2,
         }
 
-        if moveTo(approachPos) and moveTo(inspectPos) then
-            -- Face toward the server (opposite of the offset direction)
-            -- so inspect() looks at the candidate block 1 step ahead
-            -- which is serverPos + offset (the chest slot).
-            local faceTowardServer = (offset.face + 2) % 4
-            turnToFace(faceTowardServer)
+        if moveTo(approachPos) and moveTo(hoverPos) then
             sleep(SCAN_DELAY)
 
-            local success, block = turtle.inspect()
-            if success and block and block.name then
-                print("  " .. offset.name .. ": " .. block.name)
+            -- Look down at the ME interface slot
+            local downOk, downBlock = turtle.inspectDown()
+            if downOk and downBlock and downBlock.name then
+                print("  " .. offset.name .. " below: " .. downBlock.name)
 
-                if blockMatches(block.name, CHEST_PATTERNS) then
-                    foundChest = {
-                        x = serverPos.x + offset.dx,
-                        y = serverPos.y,
-                        z = serverPos.z + offset.dz,
+                if not blockMatches(downBlock.name, ME_INTERFACE_PATTERNS) then
+                    print("  Not an ME interface (got " .. downBlock.name .. "), skipping.")
+                else
+
+                -- ME interface confirmed below — chest is 1 block closer to server
+                foundChest = {
+                    x = serverPos.x + offset.dx,
+                    y = serverPos.y,
+                    z = serverPos.z + offset.dz,
+                }
+                foundME = {
+                    x = serverPos.x + offset.dx * 2,
+                    y = serverPos.y,
+                    z = serverPos.z + offset.dz * 2,
+                }
+
+                print("FOUND ME interface below, chest inferred at " .. textutils.serialize(foundChest))
+                print("ME interface at " .. textutils.serialize(foundME))
+
+                chestPosition       = foundChest
+                meInterfacePosition = foundME
+
+                modem.transmit(CHANNEL, CHANNEL, {
+                    type = "chest_found",
+                    data = {
+                        turtleId            = assignedId,
+                        chestPosition       = foundChest,
+                        meInterfacePosition = foundME,
                     }
-                    foundME = {
-                        x = serverPos.x + offset.dx * 2,
-                        y = serverPos.y,
-                        z = serverPos.z + offset.dz * 2,
-                    }
+                })
 
-                    print("FOUND CHEST at "        .. textutils.serialize(foundChest))
-                    print("ME interface assumed at " .. textutils.serialize(foundME))
-
-                    chestPosition       = foundChest
-                    meInterfacePosition = foundME
-
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "chest_found",
-                        data = {
-                            turtleId            = assignedId,
-                            chestPosition       = foundChest,
-                            meInterfacePosition = foundME,
-                        }
-                    })
-
-                    break
-                end
+                break
+                end -- blockMatches ME interface
             else
-                print("  " .. offset.name .. ": (nothing)")
+                print("  " .. offset.name .. ": (nothing below)")
             end
         else
-            print("  WARNING: Could not reach approach position for " .. offset.name)
+            print("  WARNING: Could not reach hover position for " .. offset.name)
         end
     end
 
