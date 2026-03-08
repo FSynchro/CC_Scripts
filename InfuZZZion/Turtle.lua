@@ -237,26 +237,16 @@ local function moveTo(target)
             return true
         end
 
-        -- Decide which axis to work on (Y first for safety overhead, then X, then Z)
-        if pos.y ~= target.y then
-            -- Vertical movement — no facing involved
-            local prevY = pos.y
-            if pos.y < target.y then
-                if not moveUp() then
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck on Y axis!") return false end
-                else
-                    stuckCount = 0
-                    steps = steps + 1
-                end
+        -- Decide which axis to work on:
+        -- Ascend first (clear obstacles), then X, then Z, then descend last.
+        if pos.y < target.y then
+            -- Need to go up — do this before any horizontal movement
+            if not moveUp() then
+                stuckCount = stuckCount + 1
+                if stuckCount >= 5 then print("ERROR: Stuck going up!") return false end
             else
-                if not moveDown() then
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck on Y axis!") return false end
-                else
-                    stuckCount = 0
-                    steps = steps + 1
-                end
+                stuckCount = 0
+                steps = steps + 1
             end
 
         elseif pos.x ~= target.x then
@@ -321,6 +311,16 @@ local function moveTo(target)
             else
                 stuckCount = stuckCount + 1
                 if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
+            end
+
+        elseif pos.y > target.y then
+            -- Descend last, once X and Z are already correct
+            if not moveDown() then
+                stuckCount = stuckCount + 1
+                if stuckCount >= 5 then print("ERROR: Stuck going down!") return false end
+            else
+                stuckCount = 0
+                steps = steps + 1
             end
         end
 
