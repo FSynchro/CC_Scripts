@@ -960,15 +960,21 @@ local function findChestAroundServer(serverPos)
         print("Checking " .. offset.name .. " side...")
 
         -- Approach position: 2 blocks out from the server in this direction,
-        -- at serverPos.y+1. This is always clear — it's outside the server
-        -- structure and the occupied block above the server is not in the path.
+        -- at serverPos.y+2. Flying at y+2 clears the server block and any
+        -- structure on top of it when travelling between scan positions.
+        -- We then descend to y+1 to do the horizontal inspect().
         local approachPos = {
+            x = serverPos.x + offset.dx * 2,
+            y = serverPos.y + 2,
+            z = serverPos.z + offset.dz * 2,
+        }
+        local inspectPos = {
             x = serverPos.x + offset.dx * 2,
             y = serverPos.y + 1,
             z = serverPos.z + offset.dz * 2,
         }
 
-        if moveTo(approachPos) then
+        if moveTo(approachPos) and moveTo(inspectPos) then
             -- Face toward the server (opposite of the offset direction)
             -- so inspect() looks at the candidate block 1 step ahead
             -- which is serverPos + offset (the chest slot).
