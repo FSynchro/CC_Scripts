@@ -389,11 +389,18 @@ local function findFuelInChest(chest)
 end
 
 local function refuelFromSlot()
-    turtle.select(REFUEL_SLOT)
-    local detail = turtle.getItemDetail()
-    if detail and isFuelItem(detail.name) then
-        turtle.refuel()
-        print("Refuelled! Fuel now: " .. turtle.getFuelLevel())
+    -- Scan all 16 slots for any fuel item, not just REFUEL_SLOT
+    for slot = 1, 16 do
+        local detail = turtle.getItemDetail(slot)
+        if detail and isFuelItem(detail.name) then
+            turtle.select(slot)
+            turtle.refuel()
+            print("Refuelled from slot " .. slot .. " (" .. detail.name .. ")! Fuel now: " .. turtle.getFuelLevel())
+            if turtle.getFuelLevel() >= MIN_FUEL then
+                turtle.select(1)
+                return true
+            end
+        end
     end
     turtle.select(1)
     return turtle.getFuelLevel() >= MIN_FUEL
@@ -413,16 +420,17 @@ local function doRefuel()
         return false
     end
 
-    print("LOW FUEL (" .. turtle.getFuelLevel() .. ") - heading to ME interface to refuel...")
-    updateStatus("refuelling", "going to ME interface")
+    print("LOW FUEL (" .. turtle.getFuelLevel() .. ") - checking inventory first...")
 
-    -- Safety: make sure REFUEL_SLOT has no stray non-fuel item
-    local existing = turtle.getItemDetail(REFUEL_SLOT)
-    if existing and not isFuelItem(existing.name) then
-        print("WARNING: Non-fuel item in REFUEL_SLOT " .. REFUEL_SLOT .. ": " .. existing.name)
-        print("Please clear slot " .. REFUEL_SLOT .. " manually. Aborting refuel.")
-        return false
+    -- Try burning anything already in the inventory before travelling to the ME interface
+    if refuelFromSlot() then
+        print("Refuelled from inventory! Fuel: " .. turtle.getFuelLevel())
+        updateStatus("idle", "refuelled")
+        return true
     end
+
+    print("Nothing usable in inventory, heading to ME interface...")
+    updateStatus("refuelling", "going to ME interface")
 
     local meAbovePos = {
         x = refuelPos.x,
