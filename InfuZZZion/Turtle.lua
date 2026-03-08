@@ -407,8 +407,15 @@ local function refuelFromSlot()
 end
 
 local function doRefuel()
-    -- Refuel from the ME interface, which holds coal/charcoal as a fuel source.
-    -- The ingredient chest is NOT used for refuelling.
+    -- Always try inventory first — works even at zero fuel, no movement needed.
+    print("Checking inventory for fuel...")
+    if refuelFromSlot() then
+        print("Refuelled from inventory! Fuel: " .. turtle.getFuelLevel())
+        updateStatus("idle", "refuelled")
+        return true
+    end
+
+    -- Nothing in inventory; need to travel to the ME interface.
     local refuelPos = meInterfacePosition
     if not refuelPos then
         print("ERROR: ME interface position not known yet, cannot refuel!")
@@ -416,17 +423,8 @@ local function doRefuel()
     end
 
     if turtle.getFuelLevel() == 0 then
-        print("CRITICAL: Zero fuel, cannot move to ME interface!")
+        print("CRITICAL: Zero fuel and no coal in inventory, cannot move to ME interface!")
         return false
-    end
-
-    print("LOW FUEL (" .. turtle.getFuelLevel() .. ") - checking inventory first...")
-
-    -- Try burning anything already in the inventory before travelling to the ME interface
-    if refuelFromSlot() then
-        print("Refuelled from inventory! Fuel: " .. turtle.getFuelLevel())
-        updateStatus("idle", "refuelled")
-        return true
     end
 
     print("Nothing usable in inventory, heading to ME interface...")
@@ -1064,9 +1062,11 @@ local function handleMessage(msg)
                 print("Chest pos from server: " .. textutils.serialize(chestPosition))
                 print("ME pos from server:    " .. textutils.serialize(meInterfacePosition))
             elseif msg.data.serverPosition then
-                -- Need to discover it ourselves
+                -- Need to discover it ourselves; make sure we have fuel first.
                 print("Discovering chest/ME around server...")
-                if not findChestAroundServer(msg.data.serverPosition) then
+                if not ensureFuel() then
+                    print("ERROR: Cannot refuel before chest scan! Add coal to inventory.")
+                elseif not findChestAroundServer(msg.data.serverPosition) then
                     print("ERROR: Could not find chest! Tasks will fail until chest is found.")
                 end
             else
