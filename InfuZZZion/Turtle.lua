@@ -1,37 +1,39 @@
--- Thaumcraft Infusion Turtle Worker v3.3
--- FIXED: Correct function order so all locals are visible when called
+-- Thaumcraft Infusion Turtle Worker v4.0
+-- Movement unified into a single flyTo(target) function.
+-- All operations simply pass a destination; flyTo handles all
+-- turning, ascending, horizontal travel and descending.
 
-local CHANNEL = 1742
-local ID_FILE = "turtle_id.dat"
-local PASTEBIN_KEY = "4H0FPE9BW0Yf1FT_GkPygjlmIREfylxd"  -- get free key at pastebin.com/doc/api
-local SCAN_DELAY = 0.5
-local MOVE_DELAY = 0.3
+local CHANNEL        = 1742
+local ID_FILE        = "turtle_id.dat"
+local PASTEBIN_KEY   = "4H0FPE9BW0Yf1FT_GkPygjlmIREfylxd"  -- get free key at pastebin.com/doc/api
+local SCAN_DELAY     = 0.5
+local MOVE_DELAY     = 0.3
 local GPS_VERIFY_RETRIES = 3
 
 -- Fuel constants
-local MIN_FUEL = 200          -- Minimum fuel to attempt any task
-local REFUEL_THRESHOLD = 100  -- Refuel when below this
-local REFUEL_SLOT = 16        -- Reserved inventory slot for fuel items
+local MIN_FUEL          = 200
+local REFUEL_THRESHOLD  = 100
+local REFUEL_SLOT       = 16
 local FUEL_ITEMS = {
-    ["minecraft:coal"] = true,
-    ["minecraft:charcoal"] = true,
+    ["minecraft:coal"]       = true,
+    ["minecraft:charcoal"]   = true,
     ["minecraft:coal_block"] = true,
 }
 
--- Logging
+-- ============================================================
+-- SECTION 1: LOGGING
+-- ============================================================
+
 local logBuffer = {}
 local function log(msg)
     local line = "[" .. tostring(math.floor(os.epoch("utc") / 1000)) .. "] " .. tostring(msg)
     table.insert(logBuffer, line)
     print(msg)
-    if #logBuffer > 300 then table.remove(logBuffer, 1) end  -- keep last 300 lines
+    if #logBuffer > 300 then table.remove(logBuffer, 1) end
 end
 
 local function uploadLog(label)
-    if not http then
-        print("HTTP not available, cannot upload log")
-        return nil
-    end
+    if not http then log("HTTP not available, cannot upload log") return nil end
     local body = "=== Turtle Log: " .. tostring(label) .. " ===\n" .. table.concat(logBuffer, "\n")
     local ok, err = pcall(function()
         local resp = http.post("https://pastebin.com/api/api_post.php",
@@ -44,44 +46,40 @@ local function uploadLog(label)
         if resp then
             local url = resp.readAll()
             resp.close()
-            print("Log uploaded: " .. tostring(url))
-            return url
+            log("Log uploaded: " .. tostring(url))
         end
     end)
-    if not ok then print("Upload failed: " .. tostring(err)) end
+    if not ok then log("Upload failed: " .. tostring(err)) end
 end
-
--- State
-local modem = peripheral.find("modem")
-local homePosition = nil
-local currentPosition = nil
-local lastGPSCheck = 0
-local GPS_CHECK_INTERVAL = 10
-local tasks = {}
-local computerID = os.getComputerID()
-local assignedId = nil
-local chestPosition = nil
-local meInterfacePosition = nil
-
--- Peer collision avoidance: map of turtleId -> {x,y,z,time}
--- Updated whenever we receive a turtle_keepalive from another turtle.
-local peerPositions = {}
-local PEER_TIMEOUT = 5000  -- ms: forget peer position if not seen in 5s
-local CELL_WAIT_TICKS = 4  -- ticks to wait when target cell is occupied
-local serverPosition = nil       -- Received from server; used as a no-fly zone
-local SERVER_CLEAR_Y = nil       -- Must be >= this Y to pass over the server column
-local altarZoneCenter = nil      -- Catalyst position of active altar; triggers ascent nearby
-local ALTAR_ZONE_RADIUS = 5      -- Ascend when within this many blocks on X or Z
-local facing = 0
-
-if not modem then
-    error("No wireless modem found! Please attach an ender modem.")
-end
-
-modem.open(CHANNEL)
 
 -- ============================================================
--- SECTION 1: FILE I/O
+-- SECTION 2: STATE
+-- ============================================================
+
+local modem = peripheral.find("modem")
+if not modem then error("No wireless modem found! Please attach an ender modem.") end
+modem.open(CHANNEL)
+
+local homePosition      = nil   -- Where the turtle parks between tasks
+local currentPosition   = nil   -- Last known GPS position
+local lastGPSCheck      = 0
+local GPS_CHECK_INTERVAL = 10   -- Seconds between passive GPS polls
+
+local tasks      = {}
+local computerID = os.getComputerID()
+local assignedId = nil
+local chestPosition        = nil
+local meInterfacePosition  = nil
+
+local peerPositions  = {}   -- Other turtles' last broadcast positions
+local serverPosition = nil  -- No-fly zone: column above the server computer
+local SERVER_CLEAR_Y = nil  -- Must be >= this Y to pass over the server column
+
+-- facing convention: 0=North(-Z)  1=East(+X)  2=South(+Z)  3=West(-X)
+local facing = 0
+
+-- ============================================================
+-- SECTION 3: FILE I/O
 -- ============================================================
 
 local function loadSavedId()
@@ -91,8 +89,8 @@ local function loadSavedId()
         file.close()
         if data and data.assignedId then
             assignedId = data.assignedId
-            facing = data.facing or 0
-            print("Loaded saved turtle ID: #" .. assignedId)
+            facing     = data.facing or 0
+            log("Loaded saved turtle ID: #" .. assignedId)
             return true
         end
     end
@@ -101,39 +99,31 @@ end
 
 local function saveId()
     local file = fs.open(ID_FILE, "w")
-    file.write(textutils.serialize({
-        assignedId = assignedId,
-        computerID = computerID,
-        facing = facing
-    }))
+    file.write(textutils.serialize({ assignedId = assignedId, computerID = computerID, facing = facing }))
     file.close()
 end
 
 -- ============================================================
--- SECTION 2: GPS
+-- SECTION 4: GPS
 -- ============================================================
 
-local function getPosition(forceGPS)
+local function getPosition(force)
     local now = os.epoch("utc") / 1000
-    if forceGPS or not currentPosition or (now - lastGPSCheck) >= GPS_CHECK_INTERVAL then
+    if force or not currentPosition or (now - lastGPSCheck) >= GPS_CHECK_INTERVAL then
         for attempt = 1, GPS_VERIFY_RETRIES do
             local x, y, z = gps.locate(5)
             if x then
-                currentPosition = {
-                    x = math.floor(x),
-                    y = math.floor(y),
-                    z = math.floor(z)
-                }
+                currentPosition = { x = math.floor(x), y = math.floor(y), z = math.floor(z) }
                 lastGPSCheck = now
                 return currentPosition
             end
             if attempt < GPS_VERIFY_RETRIES then
-                print("GPS attempt " .. attempt .. " failed, retrying...")
+                log("GPS attempt " .. attempt .. " failed, retrying...")
                 sleep(0.5)
             end
         end
         if currentPosition then
-            print("WARNING: GPS failed, using cached position")
+            log("WARNING: GPS failed, using cached position")
             return currentPosition
         end
         return nil
@@ -142,169 +132,96 @@ local function getPosition(forceGPS)
 end
 
 -- ============================================================
--- SECTION 3: NETWORKING HELPERS
+-- SECTION 5: NETWORKING
 -- ============================================================
 
-local function updateStatus(status, statusDetail)
+local function updateStatus(status, detail)
     modem.transmit(CHANNEL, CHANNEL, {
         type = "turtle_status_update",
-        data = {
-            turtleId = assignedId,
-            status = status,
-            statusDetail = statusDetail
-        }
+        data = { turtleId = assignedId, status = status, statusDetail = detail }
     })
 end
-
--- Check if a given {x,y,z} cell is currently occupied by a known peer turtle.
-local function isCellOccupiedByPeer(cell)
-    local now = os.epoch("utc")
-    for tid, p in pairs(peerPositions) do
-        if now - p.time < PEER_TIMEOUT then
-            if p.x == cell.x and p.y == cell.y and p.z == cell.z then
-                return true, tid
-            end
-        else
-            peerPositions[tid] = nil  -- expired, clean up
-        end
-    end
-    return false
-end
-
--- Peer positions are updated passively by handleMessage when turtle_keepalive
--- messages arrive in the main event loop. No active polling needed during moves.
 
 local function sendKeepalive()
     if assignedId then
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_keepalive",
-            data = {
-                turtleId = assignedId,
-                position = currentPosition or homePosition
-            }
+            data = { turtleId = assignedId, position = currentPosition or homePosition }
         })
     end
 end
 
 -- ============================================================
--- SECTION 4: PRIMITIVE MOVEMENT
--- ============================================================
-
-local function turnToFace(targetFacing)
-    if facing == targetFacing then return end
-    local diff = (targetFacing - facing) % 4
-    if diff == 1 or diff == -3 then
-        turtle.turnRight()
-        facing = (facing + 1) % 4
-        sleep(MOVE_DELAY)
-    elseif diff == 2 or diff == -2 then
-        turtle.turnRight()
-        facing = (facing + 1) % 4
-        sleep(MOVE_DELAY)
-        turtle.turnRight()
-        facing = (facing + 1) % 4
-        sleep(MOVE_DELAY)
-    elseif diff == 3 or diff == -1 then
-        turtle.turnLeft()
-        facing = (facing - 1) % 4
-        sleep(MOVE_DELAY)
-    end
-end
-
--- Broadcast our position before each move so peers know where we are.
-local function preMove()
-    sendKeepalive()
-end
-
--- Compute the cell directly in front given current facing.
-local function cellAhead(pos, f)
-    if f == 0 then return { x=pos.x,   y=pos.y, z=pos.z-1 }
-    elseif f == 1 then return { x=pos.x+1, y=pos.y, z=pos.z }
-    elseif f == 2 then return { x=pos.x,   y=pos.y, z=pos.z+1 }
-    else               return { x=pos.x-1, y=pos.y, z=pos.z }
-    end
-end
-
-local function moveForward()
-    preMove()
-    if not turtle.forward() then
-        return false
-    end
-    sleep(MOVE_DELAY)
-    return true
-end
-
-local function moveUp()
-    preMove()
-    if not turtle.up() then
-        turtle.digUp()
-        sleep(0.2)
-        if not turtle.up() then return false end
-    end
-    sleep(MOVE_DELAY)
-    return true
-end
-
-local function moveDown()
-    preMove()
-    if not turtle.down() then
-        turtle.digDown()
-        sleep(0.2)
-        if not turtle.down() then return false end
-    end
-    sleep(MOVE_DELAY)
-    return true
-end
-
--- ============================================================
--- SECTION 5: moveTo
+-- SECTION 6: MOVEMENT  (the single source of motion truth)
 --
--- Design principles:
---   1. GPS is the single source of truth. We never dead-reckon.
---   2. After every successful moveForward(), we take a GPS reading and
---      derive the direction we ACTUALLY moved. This updates `facing` to
---      match reality, so turnToFace() always has a correct baseline.
---   3. No "justCorrected" flag needed — because `facing` is always correct
---      after a move, turnToFace() will simply do the right thing next time.
---   4. MAX_STEPS is based on Manhattan distance so long paths never time out.
+-- Design:
+--   flyTo(target)  — the only function that moves the turtle.
 --
--- Facing convention: 0=North(-Z), 1=East(+X), 2=South(+Z), 3=West(-X)
+--   Order of axes:  ascend → X → Z → descend
+--   This means the turtle always clears whatever is at its current
+--   height before moving horizontally, and only descends once it is
+--   directly above the destination column.
+--
+--   No caller ever calls turtle.up/down/forward directly.
+--   No caller pre-ascends or post-descends outside flyTo.
+--   Callers that need to operate "from above" (inspect, pick up, drop)
+--   simply pass  {x, targetY+1, z}  as their destination.
+--
+-- No-fly zones:
+--   • serverPosition column: ascend to SERVER_CLEAR_Y before crossing it.
+--
+-- GPS policy:
+--   Dead-reckon between moves; re-sync from GPS every GPS_SYNC_INTERVAL
+--   steps.  On arrival, always do a final GPS verify.
+--
+-- Facing convention: 0=North(-Z)  1=East(+X)  2=South(+Z)  3=West(-X)
 -- ============================================================
 
--- Derive the facing we must have had when we moved from `before` to `after`.
--- Returns nil if the move didn't change X or Z (i.e. Y move or no move).
+local GPS_SYNC_INTERVAL = 8   -- steps between GPS re-queries mid-flight
+local MAX_IDLE          = 16  -- bail if Manhattan distance doesn't shrink for this many iterations
+
+-- Derive the facing we actually had from a before→after GPS delta.
 local function facingFromMove(before, after)
     local dx = after.x - before.x
     local dz = after.z - before.z
-    if dx == 1  then return 1 end  -- East
+    if dx ==  1 then return 1 end  -- East
     if dx == -1 then return 3 end  -- West
-    if dz == 1  then return 2 end  -- South
+    if dz ==  1 then return 2 end  -- South
     if dz == -1 then return 0 end  -- North
-    return nil  -- no horizontal movement detected
+    return nil
 end
 
--- Determine actual facing by moving one step and comparing GPS positions.
--- Steps back to restore position. Returns true if calibration succeeded.
+-- Turn to face the given direction (0-3), updating the global `facing`.
+local function turnToFace(want)
+    local diff = (want - facing) % 4
+    if diff == 0 then return end
+    if diff == 1 then
+        turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
+    elseif diff == 3 then
+        turtle.turnLeft();  facing = (facing - 1) % 4; sleep(MOVE_DELAY)
+    else  -- diff == 2: 180°
+        turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
+        turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
+    end
+end
+
+-- Calibrate facing by physically moving one block and reading GPS.
+-- Called once at startup, after homePosition is known.
 local function calibrateFacing()
     local before = getPosition(true)
     if not before then return false end
 
-    -- Try to move forward; if blocked try turning until we can
     local moved = false
-    for attempt = 1, 4 do
-        if turtle.forward() then
-            moved = true
-            break
-        end
-        turtle.turnRight()
-        facing = (facing + 1) % 4
+    for _ = 1, 4 do
+        if turtle.forward() then moved = true; break end
+        turtle.turnRight(); facing = (facing + 1) % 4
     end
     if not moved then
-        print("WARNING: Cannot calibrate facing (all directions blocked?)")
+        log("WARNING: Cannot calibrate facing (all directions blocked?)")
         return false
     end
 
-    sleep(0.5)  -- let GPS update
+    sleep(0.5)
     local after = getPosition(true)
     if after then
         local derived = facingFromMove(before, after)
@@ -314,187 +231,221 @@ local function calibrateFacing()
         end
     end
 
-    -- Step back to restore position
-    turtle.turnRight()
-    turtle.turnRight()
+    -- Step back
+    turtle.turnRight(); turtle.turnRight()
     turtle.forward()
-    turtle.turnRight()
-    turtle.turnRight()
+    turtle.turnRight(); turtle.turnRight()
     return true
 end
 
-local function moveTo(target)
+-- flyTo: move the turtle to exactly {x,y,z}.
+-- Returns true on successful GPS-verified arrival, false on failure.
+local function flyTo(target)
     if turtle.getFuelLevel() == 0 then
-        print("ERROR: Zero fuel, cannot move!")
+        log("ERROR: Zero fuel, cannot fly!")
         return false
     end
 
     local pos = getPosition(true)
     if not pos then
-        print("ERROR: Cannot get GPS position!")
+        log("ERROR: No GPS fix before flyTo!")
         return false
     end
 
-    log("Moving to " .. textutils.serialize(target))
+    log("flyTo " .. textutils.serialize(target))
 
-    -- Instead of a fixed step budget calculated once at the start (which fails
-    -- if the turtle overshoots and has to backtrack), we track how many
-    -- consecutive iterations make NO progress toward the target. If the
-    -- remaining Manhattan distance doesn't shrink for MAX_IDLE iterations,
-    -- we declare it stuck and bail out.
-    local MAX_IDLE = 16
-    local idleCount = 0
+    local idleCount     = 0
+    local stuckCount    = 0
+    local stepsSinceGPS = 0
     local lastDist = math.abs(target.x - pos.x)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
-    local stuckCount = 0
-    local stepsSinceGPS = 0
-    local GPS_SYNC_INTERVAL = 8  -- re-sync GPS every 8 steps to catch any drift
 
+    -- ── helpers used only inside the loop ──────────────────────
+
+    -- Try to step up one block; digs solid (non-turtle) obstacles.
+    local function stepUp()
+        sendKeepalive()
+        if turtle.up() then
+            pos = { x = pos.x, y = pos.y + 1, z = pos.z }
+            stepsSinceGPS = stepsSinceGPS + 1
+            sleep(MOVE_DELAY)
+            return true
+        end
+        -- Something overhead — dig it and retry
+        local ok, blk = turtle.inspectUp()
+        if ok then log("  dig up: " .. blk.name) end
+        turtle.digUp()
+        sleep(0.2)
+        if turtle.up() then
+            pos = { x = pos.x, y = pos.y + 1, z = pos.z }
+            stepsSinceGPS = stepsSinceGPS + 1
+            sleep(MOVE_DELAY)
+            return true
+        end
+        return false
+    end
+
+    -- Try to step down one block; digs solid obstacles below.
+    local function stepDown()
+        sendKeepalive()
+        if turtle.down() then
+            pos = { x = pos.x, y = pos.y - 1, z = pos.z }
+            stepsSinceGPS = stepsSinceGPS + 1
+            sleep(MOVE_DELAY)
+            return true
+        end
+        local ok, blk = turtle.inspectDown()
+        if ok then log("  dig down: " .. blk.name) end
+        turtle.digDown()
+        sleep(0.2)
+        if turtle.down() then
+            pos = { x = pos.x, y = pos.y - 1, z = pos.z }
+            stepsSinceGPS = stepsSinceGPS + 1
+            sleep(MOVE_DELAY)
+            return true
+        end
+        return false
+    end
+
+    -- Try to step forward one block (no digging — avoids hitting other turtles).
+    -- Updates pos and re-derives facing from GPS delta.
+    local function stepForward(wantFacing)
+        sendKeepalive()
+        turnToFace(wantFacing)
+        local before = pos
+        if not turtle.forward() then
+            local ok, blk = turtle.inspect()
+            log("  forward blocked (facing=" .. wantFacing .. "): " .. (ok and blk.name or "air/unknown"))
+            return false
+        end
+        sleep(MOVE_DELAY)
+        stepsSinceGPS = stepsSinceGPS + 1
+        -- Dead-reckon new position
+        local dx = (wantFacing == 1) and 1 or (wantFacing == 3) and -1 or 0
+        local dz = (wantFacing == 2) and 1 or (wantFacing == 0) and -1 or 0
+        pos = { x = pos.x + dx, y = pos.y, z = pos.z + dz }
+        -- Re-derive facing from actual GPS delta once we re-sync
+        local derived = facingFromMove(before, pos)
+        if derived then facing = derived end
+        return true
+    end
+
+    -- ── main navigation loop ────────────────────────────────────
     while true do
-        -- Re-query GPS only periodically or when we think we've arrived.
-        -- Dead-reckoning (pos updated after each move) is accurate enough between
-        -- syncs and avoids the stale-GPS bug that causes the turtle to reverse.
+
+        -- Periodic GPS re-sync (or on potential arrival)
         if stepsSinceGPS >= GPS_SYNC_INTERVAL or
            (pos.x == target.x and pos.y == target.y and pos.z == target.z) then
             local gpsPos = getPosition(true)
-            if gpsPos then
-                pos = gpsPos
-                stepsSinceGPS = 0
-            end
-            -- If GPS unavailable, keep using dead-reckoned pos
+            if gpsPos then pos = gpsPos end
+            stepsSinceGPS = 0
         end
 
-        if not pos then print("ERROR: Lost GPS!") return false end
-
-        -- Check if we have arrived
+        -- Arrival check
         if pos.x == target.x and pos.y == target.y and pos.z == target.z then
-            return true
+            -- Final GPS verification
+            local verified = getPosition(true)
+            if verified and verified.x == target.x and verified.y == target.y and verified.z == target.z then
+                return true
+            elseif verified then
+                pos = verified  -- not quite there — continue loop
+            end
         end
 
-        -- Check progress: if Manhattan distance shrank we're making headway
+        -- Progress check (bail if stuck)
         local dist = math.abs(target.x - pos.x)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
         if dist < lastDist then
-            idleCount = 0
-            lastDist = dist
+            idleCount = 0; stuckCount = 0; lastDist = dist
         else
             idleCount = idleCount + 1
             if idleCount >= MAX_IDLE then
-                log("ERROR: moveTo exceeded max steps!")
-                log("  Target: " .. textutils.serialize(target))
-                log("  Actual: " .. textutils.serialize(pos))
+                log("ERROR: flyTo stuck! target=" .. textutils.serialize(target) .. " pos=" .. textutils.serialize(pos))
+                uploadLog("stuck")
                 return false
             end
         end
 
-        -- Decide which axis to work on:
-        -- Ascend first (clear obstacles), then X, then Z, then descend last.
-        if pos.y < target.y then
-            -- Need to go up — do this before any horizontal movement
-            if not moveUp() then
-                stuckCount = stuckCount + 1
-                if stuckCount >= 5 then log("ERROR: Stuck going up!") uploadLog("stuck_up") return false end
-            else
-                stuckCount = 0
-                stepsSinceGPS = stepsSinceGPS + 1
-                pos = { x = pos.x, y = pos.y + 1, z = pos.z }
-            end
+        -- ── Axis decision ──────────────────────────────────────
+        -- Priority: ascend → X (with no-fly guard) → Z (with no-fly guard) → descend
 
-        elseif altarZoneCenter and
-               math.abs(pos.x - altarZoneCenter.x) <= ALTAR_ZONE_RADIUS and
-               math.abs(pos.z - altarZoneCenter.z) <= ALTAR_ZONE_RADIUS and
-               pos.y < altarZoneCenter.y + 2 and
-               target.y >= altarZoneCenter.y + 2 then
-            -- Inside the altar zone, below transit height, and target is also at
-            -- or above transit height — ascend before moving horizontally.
-            -- (Does NOT fire when target.y is the drop position below transit height.)
-            if not moveUp() then
+        if pos.y < target.y then
+            -- Must ascend
+            if not stepUp() then
                 stuckCount = stuckCount + 1
-                if stuckCount >= 5 then print("ERROR: Stuck ascending into altar zone!") return false end
+                if stuckCount >= 5 then
+                    log("ERROR: Cannot ascend to target Y!")
+                    uploadLog("stuck_up")
+                    return false
+                end
             else
                 stuckCount = 0
-                pos = { x = pos.x, y = pos.y + 1, z = pos.z }
             end
 
         elseif pos.x ~= target.x then
-            -- Before moving on X, check if the next X position is the server's X
-            -- column while we're at an unsafe Y — if so, ascend first.
+            -- Check no-fly zone: if the next X step puts us over the server column
+            -- at an unsafe height, ascend first.
             local nextX = pos.x + (pos.x < target.x and 1 or -1)
-            if serverPosition and SERVER_CLEAR_Y and
-               nextX == serverPosition.x and pos.z == serverPosition.z and
-               pos.y < SERVER_CLEAR_Y then
-                print("No-fly zone ahead on X, ascending to Y=" .. SERVER_CLEAR_Y)
-                if not moveUp() then
+            if serverPosition and SERVER_CLEAR_Y
+               and nextX == serverPosition.x and pos.z == serverPosition.z
+               and pos.y < SERVER_CLEAR_Y then
+                log("No-fly ahead on X, ascending to Y=" .. SERVER_CLEAR_Y)
+                if not stepUp() then
                     stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck ascending for no-fly X!") return false end
-                else
-                    stuckCount = 0
-                    pos = { x = pos.x, y = pos.y + 1, z = pos.z }
-                end
+                    if stuckCount >= 5 then log("ERROR: Stuck ascending for no-fly X!") return false end
+                else stuckCount = 0 end
             else
                 local wantFacing = pos.x < target.x and 1 or 3
-                turnToFace(wantFacing)
-                local beforeMove = pos
-                if moveForward() then
+                if stepForward(wantFacing) then
                     stuckCount = 0
-                    stepsSinceGPS = stepsSinceGPS + 1
-                    local newPos = { x = pos.x + (wantFacing == 1 and 1 or -1), y = pos.y, z = pos.z }
-                    local derived = facingFromMove(beforeMove, newPos)
-                    facing = derived or wantFacing
-                    pos = newPos
                 else
                     stuckCount = stuckCount + 1
-                    local ok, blk = turtle.inspect()
-                    log("  X blocked (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. "): " .. (ok and blk.name or "air/unknown"))
-                    if stuckCount >= 5 then log("ERROR: Stuck on X axis!") uploadLog("stuck_X") return false end
+                    if stuckCount >= 5 then
+                        log("ERROR: Stuck on X axis!")
+                        uploadLog("stuck_X")
+                        return false
+                    end
                 end
             end
 
         elseif pos.z ~= target.z then
-            -- Before moving on Z, check if the next Z position crosses the server's
-            -- Z column while we're at the server's X and an unsafe Y.
+            -- Check no-fly zone on Z
             local nextZ = pos.z + (pos.z < target.z and 1 or -1)
-            if serverPosition and SERVER_CLEAR_Y and
-               pos.x == serverPosition.x and nextZ == serverPosition.z and
-               pos.y < SERVER_CLEAR_Y then
-                print("No-fly zone ahead on Z, ascending to Y=" .. SERVER_CLEAR_Y)
-                if not moveUp() then
+            if serverPosition and SERVER_CLEAR_Y
+               and pos.x == serverPosition.x and nextZ == serverPosition.z
+               and pos.y < SERVER_CLEAR_Y then
+                log("No-fly ahead on Z, ascending to Y=" .. SERVER_CLEAR_Y)
+                if not stepUp() then
                     stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck ascending for no-fly Z!") return false end
-                else
-                    stuckCount = 0
-                    pos = { x = pos.x, y = pos.y + 1, z = pos.z }
-                end
+                    if stuckCount >= 5 then log("ERROR: Stuck ascending for no-fly Z!") return false end
+                else stuckCount = 0 end
             else
                 local wantFacing = pos.z < target.z and 2 or 0
-                turnToFace(wantFacing)
-                local beforeMove = pos
-                if moveForward() then
+                if stepForward(wantFacing) then
                     stuckCount = 0
-                    stepsSinceGPS = stepsSinceGPS + 1
-                    local newPos = { x = pos.x, y = pos.y, z = pos.z + (wantFacing == 2 and 1 or -1) }
-                    local derived = facingFromMove(beforeMove, newPos)
-                    facing = derived or wantFacing
-                    pos = newPos
                 else
                     stuckCount = stuckCount + 1
-                    local ok, blk = turtle.inspect()
-                    log("  Z blocked (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. "): " .. (ok and blk.name or "air/unknown"))
-                    if stuckCount >= 5 then log("ERROR: Stuck on Z axis!") uploadLog("stuck_Z") return false end
+                    if stuckCount >= 5 then
+                        log("ERROR: Stuck on Z axis!")
+                        uploadLog("stuck_Z")
+                        return false
+                    end
                 end
             end
 
         elseif pos.y > target.y then
-            -- Descend last, once X and Z are already correct
-            if not moveDown() then
+            -- X and Z correct; now descend
+            if not stepDown() then
                 stuckCount = stuckCount + 1
-                if stuckCount >= 5 then log("ERROR: Stuck going down!") uploadLog("stuck_down") return false end
+                if stuckCount >= 5 then
+                    log("ERROR: Cannot descend to target Y!")
+                    uploadLog("stuck_down")
+                    return false
+                end
             else
                 stuckCount = 0
-                stepsSinceGPS = stepsSinceGPS + 1
-                pos = { x = pos.x, y = pos.y - 1, z = pos.z }
             end
         end
 
@@ -503,64 +454,52 @@ local function moveTo(target)
 end
 
 -- ============================================================
--- SECTION 6: REFUELING  (depends on: moveTo, updateStatus)
+-- SECTION 7: FUEL
 -- ============================================================
 
-local function isFuelItem(itemName)
-    if not itemName then return false end
-    return FUEL_ITEMS[itemName] == true
+local function isFuelItem(name)
+    return name and FUEL_ITEMS[name] == true
 end
 
--- Pull a fuel item from chest below into REFUEL_SLOT.
 local function findFuelInChest(chest)
     if not chest or not chest.list then return false end
-
     for slot, item in pairs(chest.list()) do
         if isFuelItem(item.name) then
-            -- Try pushItems first (precise, puts item into our chosen slot)
             local ok, moved = pcall(function()
                 return chest.pushItems(peripheral.getName(turtle) or "turtle", slot, 64, REFUEL_SLOT)
             end)
             if ok and moved and moved > 0 then
-                print("Pulled " .. moved .. "x " .. item.name .. " via pushItems")
+                log("Pulled " .. moved .. "x " .. item.name .. " via pushItems")
                 return true
             end
-            -- pushItems failed; fall through to suckDown
             break
         end
     end
-
-    -- Fallback: suckDown then verify we got the right thing
     turtle.select(REFUEL_SLOT)
     if turtle.suckDown(64) then
         local sucked = turtle.getItemDetail(REFUEL_SLOT)
         if sucked and isFuelItem(sucked.name) then
-            print("Pulled fuel via suckDown: " .. sucked.name)
+            log("Pulled fuel via suckDown: " .. sucked.name)
             turtle.select(1)
             return true
         else
-            -- Wrong item, put it back
-            if sucked then
-                print("ERROR: suckDown got wrong item: " .. sucked.name .. ". Returning.")
-            end
+            if sucked then log("ERROR: suckDown got wrong item: " .. sucked.name .. ". Returning.") end
             turtle.dropDown(turtle.getItemCount(REFUEL_SLOT))
             turtle.select(1)
             return false
         end
     end
-
     turtle.select(1)
     return false
 end
 
 local function refuelFromSlot()
-    -- Scan all 16 slots for any fuel item, not just REFUEL_SLOT
     for slot = 1, 16 do
         local detail = turtle.getItemDetail(slot)
         if detail and isFuelItem(detail.name) then
             turtle.select(slot)
             turtle.refuel()
-            print("Refuelled from slot " .. slot .. " (" .. detail.name .. ")! Fuel now: " .. turtle.getFuelLevel())
+            log("Refuelled from slot " .. slot .. "! Fuel now: " .. turtle.getFuelLevel())
             if turtle.getFuelLevel() >= MIN_FUEL then
                 turtle.select(1)
                 return true
@@ -572,142 +511,92 @@ local function refuelFromSlot()
 end
 
 local function doRefuel()
-    -- Always try inventory first — works even at zero fuel, no movement needed.
-    print("Checking inventory for fuel...")
+    log("Checking inventory for fuel...")
     if refuelFromSlot() then
-        print("Refuelled from inventory! Fuel: " .. turtle.getFuelLevel())
+        log("Refuelled from inventory! Fuel: " .. turtle.getFuelLevel())
         updateStatus("idle", "refuelled")
         return true
     end
 
-    -- Nothing in inventory; need to travel to the ME interface.
     local refuelPos = meInterfacePosition
     if not refuelPos then
-        print("ERROR: ME interface position not known yet, cannot refuel!")
+        log("ERROR: ME interface position unknown, cannot refuel!")
         return false
     end
-
     if turtle.getFuelLevel() == 0 then
-        print("CRITICAL: Zero fuel and no coal in inventory, cannot move to ME interface!")
+        log("CRITICAL: Zero fuel and no coal in inventory!")
         return false
     end
 
-    print("Nothing usable in inventory, heading to ME interface...")
+    log("Heading to ME interface for fuel...")
     updateStatus("refuelling", "going to ME interface")
 
-    local meAbovePos = {
-        x = refuelPos.x,
-        y = refuelPos.y + 1,
-        z = refuelPos.z
-    }
-
-    if not moveTo(meAbovePos) then
-        print("ERROR: Cannot reach ME interface to refuel!")
+    -- Fly to one block above the ME interface, then suck from below
+    if not flyTo({ x = refuelPos.x, y = refuelPos.y + 1, z = refuelPos.z }) then
+        log("ERROR: Cannot reach ME interface!")
         return false
     end
 
     local me = peripheral.wrap("bottom")
     if not me or not me.list then
-        print("ERROR: No ME interface found below refuel position!")
+        log("ERROR: No ME interface below refuel position!")
         return false
     end
-
     if not findFuelInChest(me) then
-        print("ERROR: No fuel items (coal/charcoal) found in ME interface!")
+        log("ERROR: No fuel in ME interface!")
         return false
     end
 
     local ok = refuelFromSlot()
     if ok then
-        print("Refuel complete! Fuel: " .. turtle.getFuelLevel())
+        log("Refuel complete! Fuel: " .. turtle.getFuelLevel())
         updateStatus("idle", "refuelled")
     else
-        print("WARNING: Still low after refuel: " .. turtle.getFuelLevel())
+        log("WARNING: Still low after refuel: " .. turtle.getFuelLevel())
     end
     return ok
 end
 
--- Gate used before every task and mid-scan.
 local function ensureFuel()
-    if turtle.getFuelLevel() >= MIN_FUEL then
-        return true
-    end
+    if turtle.getFuelLevel() >= MIN_FUEL then return true end
     return doRefuel()
 end
 
 -- ============================================================
--- SECTION 7: RETURN HOME  (depends on: moveTo, saveId, updateStatus, sendKeepalive)
+-- SECTION 8: RETURN HOME
 -- ============================================================
+
+-- returnItemsToChest is forward-declared here so returnHome can call it.
+local returnItemsToChest
 
 local function returnHome()
     if not homePosition then return false end
-
     log("Returning home...")
-    updateStatus("returning", "going to home position")
+    updateStatus("returning", "going home")
 
-    local current = getPosition(true)
-    if not current then
-        print("ERROR: Cannot get GPS for return!")
-        return false
-    end
-
-    -- Ascend to a safe clearance height before moving horizontally.
-    -- This avoids walking through the chest/server structure at ground level.
-    local safeY = math.max(homePosition.y, current.y) + 2
-    if current.y < safeY then
-        local ascendPos = { x = current.x, y = safeY, z = current.z }
-        if not moveTo(ascendPos) then
-            print("ERROR: Cannot ascend for home return!")
-            return false
-        end
-    end
-
-    -- Move X/Z at safe height, then descend to home Y
-    local intermediatePos = { x = homePosition.x, y = safeY, z = homePosition.z }
-    if not moveTo(intermediatePos) then
+    if not flyTo(homePosition) then
         local cur = getPosition(true)
-        log("ERROR: Cannot reach home X,Z! cur=" .. textutils.serialize(cur) .. " target=" .. textutils.serialize(intermediatePos))
+        log("ERROR: Cannot reach home! cur=" .. textutils.serialize(cur))
         uploadLog("home_fail")
         return false
-    end
-
-    -- Descend directly rather than using moveTo — avoids GPS drift causing
-    -- spurious X/Z corrections mid-descent that get us stuck.
-    local cur = getPosition(true)
-    if cur then
-        local stepsDown = cur.y - homePosition.y
-        for i = 1, stepsDown do
-            if not turtle.down() then
-                -- Something below — try once more after a moment
-                sleep(0.5)
-                if not turtle.down() then
-                    log("ERROR: Cannot descend to home Y at step " .. i)
-                    uploadLog("home_y_fail")
-                    return false
-                end
-            end
-        end
     end
 
     log("Home!")
     saveId()
 
-    -- Check for any stray non-fuel items and return them to the chest
+    -- Deposit any stray non-fuel items
     if chestPosition then
         local hasStray = false
         for slot = 1, 16 do
-            local detail = turtle.getItemDetail(slot)
-            if detail and not isFuelItem(detail.name) then
-                hasStray = true
-                break
-            end
+            local d = turtle.getItemDetail(slot)
+            if d and not isFuelItem(d.name) then hasStray = true; break end
         end
         if hasStray then
-            print("Found stray items at home, returning to chest...")
+            log("Found stray items, returning to chest...")
             returnItemsToChest(chestPosition)
-            -- Come back home after depositing
-            moveTo(homePosition)
-            print("Home again after returning items!")
+            -- flyTo home again after deposit
+            flyTo(homePosition)
+            log("Home again after returning items!")
         end
     end
 
@@ -717,131 +606,84 @@ local function returnHome()
 end
 
 -- ============================================================
--- SECTION 8: BLOCK INSPECTION HELPERS
---
--- inspectBelow(targetPos):
---   Moves to one block ABOVE targetPos, calls turtle.inspectDown(),
---   returns (success, blockData). Used for both chest detection and
---   pedestal scanning — the single place that knows about Y+1 geometry.
---
--- blockMatches(blockName, patterns):
---   Case-insensitive substring match against a list of patterns.
---   All "is this a chest / pedestal / stabilizer" logic lives here.
+-- SECTION 9: BLOCK INSPECTION HELPERS
 -- ============================================================
+
+local CHEST_PATTERNS        = {"chest"}
+local PEDESTAL_PATTERNS     = {"pedestal"}
+local STABILIZER_PATTERNS   = {"skull", "head", "candle"}
+local ME_INTERFACE_PATTERNS = {"me_interface", "interface", "appeng", "ae2"}
 
 local function blockMatches(blockName, patterns)
     if not blockName then return false end
     local lower = blockName:lower()
-    for _, pattern in ipairs(patterns) do
-        if lower:find(pattern:lower()) then
-            return true
-        end
+    for _, p in ipairs(patterns) do
+        if lower:find(p:lower()) then return true end
     end
     return false
 end
 
--- Pattern tables — edit these if mod block names differ
-local CHEST_PATTERNS      = {"chest"}
-local PEDESTAL_PATTERNS   = {"pedestal"}
-local STABILIZER_PATTERNS = {"skull", "head", "candle"}
-local ME_INTERFACE_PATTERNS = {"me_interface", "interface", "appeng", "ae2"}
-
+-- Move to one block above targetPos and inspect down.
+-- Callers pass the actual block position; we handle the +1 internally.
 local function inspectBelow(targetPos)
-    -- Travel at y+2 so the turtle clears pedestals and altar structures
-    -- when moving between scan positions. Then step down to y+1 to inspect.
-    local transitPos = {
-        x = targetPos.x,
-        y = targetPos.y + 2,
-        z = targetPos.z
-    }
-    local abovePos = {
-        x = targetPos.x,
-        y = targetPos.y + 1,
-        z = targetPos.z
-    }
-
-    if not moveTo(transitPos) then
-        print("  inspectBelow: could not reach transit above " .. textutils.serialize(targetPos))
+    local abovePos = { x = targetPos.x, y = targetPos.y + 1, z = targetPos.z }
+    if not flyTo(abovePos) then
+        log("  inspectBelow: could not reach above " .. textutils.serialize(targetPos))
         return false, nil
     end
-
-    if not moveTo(abovePos) then
-        print("  inspectBelow: could not descend to inspect above " .. textutils.serialize(targetPos))
-        return false, nil
-    end
-
     sleep(SCAN_DELAY)
     local success, block = turtle.inspectDown()
     if success and block and block.name then
-        print("  inspectBelow " .. textutils.serialize(targetPos) .. " => " .. block.name)
+        log("  inspectBelow " .. textutils.serialize(targetPos) .. " => " .. block.name)
         return true, block
     end
-
-    print("  inspectBelow " .. textutils.serialize(targetPos) .. " => (nothing)")
-    -- Return true with nil block — position was reached, just nothing there
+    log("  inspectBelow " .. textutils.serialize(targetPos) .. " => (nothing)")
     return true, nil
 end
 
 -- ============================================================
--- SECTION 9: SCANNING  (depends on: moveTo, doRefuel, inspectBelow, blockMatches)
+-- SECTION 10: SCANNING
 -- ============================================================
 
-local function isStabilizer(blockName)
-    return blockMatches(blockName, STABILIZER_PATTERNS)
-end
+local function isStabilizer(name) return blockMatches(name, STABILIZER_PATTERNS) end
 
 local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
-    print("=================================")
-    print("STARTING PEDESTAL SCAN")
-    print("Catalyst: " .. textutils.serialize(catalystPos))
-    print("Rows (Z): " .. textutils.serialize(assignedRows))
-    print("Fuel: " .. turtle.getFuelLevel())
-    print("=================================")
+    log("=================================")
+    log("STARTING PEDESTAL SCAN")
+    log("Catalyst: " .. textutils.serialize(catalystPos))
+    log("Rows (Z): " .. textutils.serialize(assignedRows))
+    log("Fuel: " .. turtle.getFuelLevel())
+    log("=================================")
 
     updateStatus("scanning", "scanning pedestals")
     sendKeepalive()
 
-    local pedestals = {}
-    local stabilizers = {}
-    local foundPedestals = {}
-    local foundStabilizers = {}
-
-    -- Before entering the scan grid, ascend to catalystPos.y+2 if we are
-    -- already within the altar's footprint (within 5 blocks on X or Z).
-    -- This ensures we clear the pedestals before moving horizontally.
-    local startPos = getPosition(true)
-    if startPos then
-        local dxStart = math.abs(startPos.x - catalystPos.x)
-        local dzStart = math.abs(startPos.z - catalystPos.z)
-        if dxStart <= 5 and dzStart <= 5 then
-            print("Within altar range, ascending to clear pedestals...")
-            moveTo({ x = startPos.x, y = catalystPos.y + 2, z = startPos.z })
-        end
-    end
+    local pedestals         = {}
+    local stabilizers       = {}
+    local foundPedestals    = {}
+    local foundStabilizers  = {}
 
     for rowIdx, zOffset in ipairs(assignedRows) do
-        print("Row " .. rowIdx .. "/" .. #assignedRows .. " (Z=" .. zOffset .. ")...")
+        log("Row " .. rowIdx .. "/" .. #assignedRows .. " (Z=" .. zOffset .. ")...")
 
         for xOffset = -3, 3 do
             if not (xOffset == 0 and zOffset == 0) then
 
                 if turtle.getFuelLevel() < REFUEL_THRESHOLD then
-                    print("Fuel low during scan (" .. turtle.getFuelLevel() .. "), refuelling...")
-                    if not doRefuel() then
-                        print("WARNING: Could not refuel during scan, continuing")
-                    end
+                    log("Fuel low during scan (" .. turtle.getFuelLevel() .. "), refuelling...")
+                    if not doRefuel() then log("WARNING: Could not refuel during scan, continuing") end
                 end
 
-                -- Hover 2 above the pedestal level to clear the pedestal tops,
-                -- then inspect down onto the pedestal surface (catalystPos.y).
-                local hoverPos = {
+                -- flyTo handles the transit height automatically (ascend before moving horizontally).
+                -- We scan from one block above the pedestal surface.
+                local scanPos = {
                     x = catalystPos.x + xOffset,
-                    y = catalystPos.y + 2,
+                    y = catalystPos.y + 1,   -- one above the pedestal/ground surface
                     z = catalystPos.z + zOffset
                 }
 
-                local reached = moveTo(hoverPos)
-                local block = nil
+                local reached = flyTo(scanPos)
+                local block   = nil
                 if reached then
                     sleep(SCAN_DELAY)
                     local ok, b = turtle.inspectDown()
@@ -849,13 +691,13 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                 end
 
                 if not reached then
-                    print("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
+                    log("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
                 elseif block then
-                    -- The actual pedestal is 2 below the hover position
+                    -- The pedestal itself is one block below our scan position
                     local pedestalPos = {
-                        x = hoverPos.x,
-                        y = hoverPos.y - 2,
-                        z = hoverPos.z
+                        x = scanPos.x,
+                        y = scanPos.y - 1,
+                        z = scanPos.z
                     }
                     local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
 
@@ -863,13 +705,13 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                         if not foundPedestals[posKey] then
                             foundPedestals[posKey] = true
                             table.insert(pedestals, pedestalPos)
-                            print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
+                            log("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
                         end
                     elseif blockMatches(block.name, STABILIZER_PATTERNS) then
                         if not foundStabilizers[posKey] then
                             foundStabilizers[posKey] = true
                             table.insert(stabilizers, pedestalPos)
-                            print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
+                            log("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
                         end
                     end
                 end
@@ -878,56 +720,47 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
             end
         end
 
-        print("End of row " .. rowIdx .. " | Pedestals: " .. #pedestals .. " Stabilizers: " .. #stabilizers)
+        log("End of row " .. rowIdx .. " | Pedestals: " .. #pedestals .. " Stabilizers: " .. #stabilizers)
     end
 
-    print("=================================")
-    print("SCAN COMPLETE")
-    print("Total Pedestals: " .. #pedestals)
-    print("Total Stabilizers: " .. #stabilizers)
-    print("=================================")
+    log("=================================")
+    log("SCAN COMPLETE — Pedestals: " .. #pedestals .. " Stabilizers: " .. #stabilizers)
+    log("=================================")
 
     return pedestals, stabilizers
 end
 
 -- ============================================================
--- SECTION 9: ITEM HANDLING  (depends on: moveTo, isFuelItem)
+-- SECTION 11: ITEM HANDLING
+--
+-- All item operations follow the same "operate from above" pattern:
+--   flyTo({x, blockY+1, z}) → act on what's below (suck/drop/inspect)
+--
+-- This means:
+--   pickupItemFromChest  → flyTo chest+1, suckDown
+--   returnItemsToChest   → flyTo chest+1, dropDown
+--   placeItemOnPedestal  → flyTo pedestal+1, dropDown
+--   retrieveItemFromPedestal → flyTo pedestal+1, suckDown
+--   clearPedestal        → flyTo pedestal+1, suckDown
+--
+-- flyTo's ascend-first ordering ensures the turtle always rises to
+-- clear any horizontal obstacles before moving sideways.
 -- ============================================================
 
 local function pickupItemFromChest(item, chestPos)
-    -- The chest is at ground level beside the server. We must NOT try to path
-    -- horizontally at ground level — the chest/server block the way.
-    -- Strategy: ascend in place to chest.y+2 first, THEN move X/Z, then drop to chest.y+1.
-    local safeY = chestPos.y + 2
-    local currentPos = getPosition(true)
-    if not currentPos then
-        print("ERROR: Cannot get GPS position before chest approach")
-        return false
-    end
-
-    -- Step 1: ascend in place to safe height (moveTo with same X,Z = pure Y move)
-    local ascendPos = { x = currentPos.x, y = safeY, z = currentPos.z }
-    if not moveTo(ascendPos) then
-        print("ERROR: Cannot ascend to safe height before chest")
-        return false
-    end
-
-    -- Step 2: move horizontally at safe height to above chest
-    local transitPos = { x = chestPos.x, y = safeY, z = chestPos.z }
-    local chestAbovePos = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
-
-    if not moveTo(transitPos) or not moveTo(chestAbovePos) then
-        print("ERROR: Cannot move above chest")
+    -- Fly to one block above the chest
+    if not flyTo({ x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }) then
+        log("ERROR: Cannot reach chest at " .. textutils.serialize(chestPos))
         return false
     end
 
     local chest = peripheral.wrap("bottom")
     if not chest or not chest.list then
-        print("ERROR: Cannot find chest below")
+        log("ERROR: No chest found below at " .. textutils.serialize(chestPos))
         return false
     end
 
-    -- Locate the correct slot
+    -- Find the correct slot
     local itemSlot = nil
     for slot, chestItem in pairs(chest.list()) do
         if chestItem.name == item.item.name then
@@ -935,95 +768,72 @@ local function pickupItemFromChest(item, chestPos)
             if item.matchDMG and (chestItem.damage or 0) ~= (item.item.damage or 0) then
                 match = false
             end
-            if match then
-                itemSlot = slot
-                break
-            end
+            if match then itemSlot = slot; break end
         end
     end
 
     if not itemSlot then
-        print("ERROR: Item not found in chest: " .. item.item.name)
+        log("ERROR: Item not found in chest: " .. item.item.name)
         return false
     end
 
     turtle.select(1)
 
-    -- Try pushItems first (precise slot targeting into slot 1)
-    turtle.select(1)
+    -- Preferred: pushItems (precise slot targeting)
     local ok, moved = pcall(function()
         return chest.pushItems(peripheral.getName(turtle) or "turtle", itemSlot, 1, 1)
     end)
     if ok and moved and moved > 0 then
-        local pickedUp = turtle.getItemDetail(1)
-        local gotName = pickedUp and pickedUp.name or "unknown"
-        print("Picked up " .. gotName .. " via pushItems (wanted " .. item.item.name .. ")")
+        log("Picked up " .. item.item.name .. " via pushItems")
         return true
     end
 
-    -- Fallback: suckDown — selects specific slot first to avoid mixing items
-    turtle.select(itemSlot <= 16 and 1 or 1)
+    -- Fallback: suckDown
     if not turtle.suckDown(1) then
-        print("ERROR: Cannot suck item from chest")
+        log("ERROR: Cannot suck item from chest")
         return false
     end
-
     local pickedUp = turtle.getItemDetail(1)
     if pickedUp then
         if isFuelItem(pickedUp.name) then
-            -- Accidentally grabbed fuel, put it back
-            print("WARNING: suckDown grabbed fuel " .. pickedUp.name .. ", returning")
+            log("WARNING: suckDown grabbed fuel " .. pickedUp.name .. ", returning")
             turtle.dropDown(turtle.getItemCount(1))
             return false
         end
-        print("Picked up " .. pickedUp.name .. " (wanted " .. item.item.name .. ")")
+        log("Picked up " .. pickedUp.name .. " (wanted " .. item.item.name .. ")")
     end
     return true
 end
 
--- Return all non-fuel items in inventory to the chest, then go home.
-local function returnItemsToChest(chestPos)
+-- defined via forward reference so returnHome can call it
+returnItemsToChest = function(chestPos)
     local hasItems = false
     for slot = 1, 16 do
-        local detail = turtle.getItemDetail(slot)
-        if detail and not isFuelItem(detail.name) then
-            hasItems = true
-            break
-        end
+        local d = turtle.getItemDetail(slot)
+        if d and not isFuelItem(d.name) then hasItems = true; break end
     end
     if not hasItems then return end
 
-    print("Returning stray items to chest...")
-    -- Ascend in place first, then move horizontally — chest is at ground level
-    -- beside the server and cannot be approached at the same Y.
-    local safeY = chestPos.y + 2
-    local curPos = getPosition(true)
-    local didAscend = false
-    if curPos and curPos.y < safeY then
-        local ascendPos = { x = curPos.x, y = safeY, z = curPos.z }
-        didAscend = moveTo(ascendPos)
-    else
-        didAscend = true
+    log("Returning stray items to chest...")
+
+    if not flyTo({ x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }) then
+        log("ERROR: Could not reach chest to return items!")
+        return
     end
-    local transitPos     = { x = chestPos.x, y = safeY, z = chestPos.z }
-    local chestAbovePos  = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
-    if didAscend and moveTo(transitPos) and moveTo(chestAbovePos) then
-        for slot = 1, 16 do
-            local detail = turtle.getItemDetail(slot)
-            if detail and not isFuelItem(detail.name) then
-                turtle.select(slot)
-                turtle.dropDown(turtle.getItemCount(slot))
-                print("Returned " .. detail.name .. " from slot " .. slot)
-            end
+
+    for slot = 1, 16 do
+        local d = turtle.getItemDetail(slot)
+        if d and not isFuelItem(d.name) then
+            turtle.select(slot)
+            turtle.dropDown(turtle.getItemCount(slot))
+            log("Returned " .. d.name .. " from slot " .. slot)
         end
-        turtle.select(1)
-    else
-        print("ERROR: Could not reach chest to return items!")
     end
+    turtle.select(1)
 end
 
-local function placeItemOnPedestal(item, position, chestPos)
-    print("Placing " .. item.item.name .. " on pedestal at " .. textutils.serialize(position))
+local function placeItemOnPedestal(item, pedestalPos, chestPos)
+    log("Placing " .. item.item.name .. " on pedestal at " .. textutils.serialize(pedestalPos))
     updateStatus("working", "picking up item")
 
     if not pickupItemFromChest(item, chestPos) then
@@ -1032,142 +842,177 @@ local function placeItemOnPedestal(item, position, chestPos)
 
     updateStatus("working", "placing on pedestal")
 
-    -- Must ascend in place before moving horizontally — pedestals are at ground
-    -- level and the altar area is full of blocks we cannot walk through.
-    local safeY = position.y + 2
-    local curPos = getPosition(true)
-    if not curPos then
-        print("ERROR: Lost GPS before pedestal approach")
-        returnItemsToChest(chestPos)
-        return false
-    end
-
-    if curPos.y < safeY then
-        local ascendPos = { x = curPos.x, y = safeY, z = curPos.z }
-        if not moveTo(ascendPos) then
-            print("ERROR: Cannot ascend before pedestal approach")
-            returnItemsToChest(chestPos)
-            return false
-        end
-    end
-
-    local transitPos = { x = position.x, y = safeY, z = position.z }
-
-    if not moveTo(transitPos) then
-        print("ERROR: Cannot move above pedestal, returning item to chest")
-        returnItemsToChest(chestPos)
-        return false
-    end
-
-    -- We are now at position.y+2, directly above the pedestal.
-    -- Descend one step to position.y+1 (the air block above the pedestal)
-    -- using a raw turtle.down() — no moveTo so we don't trigger stuck logic.
-    if not turtle.down() then
-        print("ERROR: Cannot descend to pedestal drop height, returning item to chest")
+    -- Fly to one block above the pedestal, then drop down onto it
+    if not flyTo({ x = pedestalPos.x, y = pedestalPos.y + 1, z = pedestalPos.z }) then
+        log("ERROR: Cannot reach above pedestal, returning item")
         returnItemsToChest(chestPos)
         return false
     end
 
     turtle.select(1)
     if not turtle.dropDown(1) then
-        print("ERROR: Cannot drop item onto pedestal, returning item to chest")
-        turtle.up()  -- ascend back before returning
+        log("ERROR: Cannot drop onto pedestal, returning item")
         returnItemsToChest(chestPos)
         return false
     end
-    turtle.up()  -- ascend back to transit height before next move
 
-    print("Item placed!")
+    log("Item placed on pedestal!")
     return true
 end
 
-local function retrieveItemFromPedestal(position, mePos)
-    print("Retrieving item from pedestal at " .. textutils.serialize(position))
+local function retrieveItemFromPedestal(pedestalPos, mePos)
+    log("Retrieving item from pedestal at " .. textutils.serialize(pedestalPos))
     updateStatus("working", "picking up result")
 
-    local pedestalAbovePos = {
-        x = position.x,
-        y = position.y + 1,
-        z = position.z
-    }
-
-    if not moveTo(pedestalAbovePos) then
-        print("ERROR: Cannot move to pedestal")
+    if not flyTo({ x = pedestalPos.x, y = pedestalPos.y + 1, z = pedestalPos.z }) then
+        log("ERROR: Cannot reach pedestal for retrieval")
         return false
     end
 
     turtle.select(1)
     if not turtle.suckDown(1) then
-        print("ERROR: Cannot suck item from pedestal")
+        log("ERROR: Cannot suck item from pedestal")
         return false
     end
 
     updateStatus("working", "depositing to ME")
 
-    local meAbovePos = {
-        x = mePos.x,
-        y = mePos.y + 1,
-        z = mePos.z
-    }
-
-    if not moveTo(meAbovePos) then
-        print("ERROR: Cannot move to ME Interface")
+    if not flyTo({ x = mePos.x, y = mePos.y + 1, z = mePos.z }) then
+        log("ERROR: Cannot reach ME interface for deposit")
         return false
     end
 
     turtle.select(1)
     if not turtle.dropDown(1) then
-        print("ERROR: Cannot drop into ME Interface")
+        log("ERROR: Cannot drop into ME interface")
         return false
     end
 
-    print("Result deposited!")
+    log("Result deposited to ME!")
     return true
 end
 
-local function clearPedestal(position, mePos)
-    print("Clearing pedestal at " .. textutils.serialize(position))
+local function clearPedestal(pedestalPos, mePos)
+    log("Clearing pedestal at " .. textutils.serialize(pedestalPos))
     updateStatus("working", "clearing pedestal")
 
-    local pedestalAbovePos = {
-        x = position.x,
-        y = position.y + 1,
-        z = position.z
-    }
-
-    if not moveTo(pedestalAbovePos) then
-        print("ERROR: Cannot move to pedestal")
+    if not flyTo({ x = pedestalPos.x, y = pedestalPos.y + 1, z = pedestalPos.z }) then
+        log("ERROR: Cannot reach pedestal to clear")
         return false
     end
 
     turtle.select(1)
     if turtle.suckDown(1) then
-        local meAbovePos = {
-            x = mePos.x,
-            y = mePos.y + 1,
-            z = mePos.z
-        }
-        if moveTo(meAbovePos) then
-            turtle.select(1)
-            turtle.dropDown(1)
-            print("Pedestal cleared, item deposited")
+        if not flyTo({ x = mePos.x, y = mePos.y + 1, z = mePos.z }) then
+            log("ERROR: Cannot reach ME interface after clearing pedestal")
+            return false
         end
+        turtle.select(1)
+        turtle.dropDown(1)
+        log("Pedestal cleared, item deposited")
     else
-        print("Pedestal already empty")
+        log("Pedestal already empty")
     end
 
     return true
 end
 
 -- ============================================================
--- SECTION 10: TASK EXECUTION  (depends on everything above)
+-- SECTION 12: CHEST/ME DISCOVERY
+-- ============================================================
+
+local CARDINAL_OFFSETS = {
+    {dx =  0, dz = -1, name = "North", face = 0},
+    {dx =  1, dz =  0, name = "East",  face = 1},
+    {dx =  0, dz =  1, name = "South", face = 2},
+    {dx = -1, dz =  0, name = "West",  face = 3},
+}
+
+local function findChestAroundServer(serverPos)
+    log("=================================")
+    log("SEARCHING FOR CHEST/ME INTERFACE")
+    log("Server pos: " .. textutils.serialize(serverPos))
+    log("=================================")
+
+    updateStatus("searching", "finding chest")
+
+    local foundChest = nil
+    local foundME    = nil
+
+    for _, offset in ipairs(CARDINAL_OFFSETS) do
+        log("Checking " .. offset.name .. " side...")
+
+        -- Hover one block above and two blocks out from the server.
+        -- flyTo ascends to clear the server before moving horizontally.
+        local hoverPos = {
+            x = serverPos.x + offset.dx * 2,
+            y = serverPos.y + 1,
+            z = serverPos.z + offset.dz * 2,
+        }
+
+        if flyTo(hoverPos) then
+            sleep(SCAN_DELAY)
+            local downOk, downBlock = turtle.inspectDown()
+            if downOk and downBlock and downBlock.name then
+                log("  " .. offset.name .. " below: " .. downBlock.name)
+
+                if not blockMatches(downBlock.name, ME_INTERFACE_PATTERNS) then
+                    log("  Not an ME interface (got " .. downBlock.name .. "), skipping.")
+                else
+                    foundChest = {
+                        x = serverPos.x + offset.dx,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz,
+                    }
+                    foundME = {
+                        x = serverPos.x + offset.dx * 2,
+                        y = serverPos.y,
+                        z = serverPos.z + offset.dz * 2,
+                    }
+
+                    log("FOUND ME interface! Chest inferred at " .. textutils.serialize(foundChest))
+                    log("ME interface at " .. textutils.serialize(foundME))
+
+                    chestPosition       = foundChest
+                    meInterfacePosition = foundME
+
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "chest_found",
+                        data = {
+                            turtleId            = assignedId,
+                            chestPosition       = foundChest,
+                            meInterfacePosition = foundME,
+                        }
+                    })
+                    break
+                end
+            else
+                log("  " .. offset.name .. ": (nothing below)")
+            end
+        else
+            log("  WARNING: Could not reach hover position for " .. offset.name)
+        end
+    end
+
+    returnHome()
+
+    if foundChest then
+        return true
+    else
+        log("ERROR: No chest found! Make sure a chest is placed beside the server.")
+        return false
+    end
+end
+
+-- ============================================================
+-- SECTION 13: TASK EXECUTION
 -- ============================================================
 
 local function executeTask(task)
-    print("Executing task: " .. task.type)
+    log("Executing task: " .. task.type)
 
     if not ensureFuel() then
-        print("ERROR: Cannot get fuel to execute task!")
+        log("ERROR: Cannot get fuel for task!")
         return false
     end
 
@@ -1177,54 +1022,39 @@ local function executeTask(task)
         modem.transmit(CHANNEL, CHANNEL, {
             type = "pedestals_scanned",
             data = {
-                altarId = task.altarId,
-                pedestalPositions = pedestals,
+                altarId             = task.altarId,
+                pedestalPositions   = pedestals,
                 stabilizerPositions = stabilizers,
-                turtleId = assignedId
+                turtleId            = assignedId
             }
         })
-
         return returnHome()
 
     elseif task.type == "place_catalyst" then
         updateStatus("working", "placing catalyst")
         local cp = task.chestPosition or chestPosition
-        if not cp then
-            print("ERROR: No chest position for place_catalyst task! Skipping.")
-            return false
-        end
-        altarZoneCenter = task.altarCatalyst or task.position
+        if not cp then log("ERROR: No chest position for place_catalyst!") return false end
         local result = placeItemOnPedestal(task.item, task.position, cp)
-        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "place_ingredient" then
         updateStatus("working", "placing ingredient")
         local cp = task.chestPosition or chestPosition
-        if not cp then
-            print("ERROR: No chest position for place_ingredient task! Skipping.")
-            return false
-        end
-        altarZoneCenter = task.altarCatalyst or task.position
+        if not cp then log("ERROR: No chest position for place_ingredient!") return false end
         local result = placeItemOnPedestal(task.item, task.position, cp)
-        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "retrieve_result" then
         updateStatus("working", "retrieving result")
-        altarZoneCenter = task.position
         local result = retrieveItemFromPedestal(task.position, task.meInterfacePosition)
-        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "clear_pedestal" then
         updateStatus("working", "clearing pedestal")
-        altarZoneCenter = task.altarCatalyst or task.position
         local result = clearPedestal(task.position, task.meInterfacePosition)
-        altarZoneCenter = nil
         returnHome()
         return result
     end
@@ -1236,137 +1066,18 @@ local function processTasks()
     while #tasks > 0 do
         local task = table.remove(tasks, 1)
         local success = executeTask(task)
-
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_task_complete",
-            data = {
-                turtleId = assignedId,
-                success = success
-            }
+            data = { turtleId = assignedId, success = success }
         })
     end
-
     updateStatus("idle", "waiting")
     sendKeepalive()
-    print("Tasks complete")
+    log("Tasks complete")
 end
 
 -- ============================================================
--- SECTION 10.6: CHEST/ME DISCOVERY
---
--- Layout: server → chest (1 block to one side) → ME interface (1 further)
---
--- The block directly above the server is occupied, so we must never
--- route through serverPos.y+1 above the server itself.
---
--- Strategy: for each cardinal direction, approach from 2 blocks out
--- at serverPos.y+1 (safely beside the server, not above it), then
--- use turtle.inspect() to look horizontally at the candidate chest
--- position which is 1 block ahead at the same Y.
--- We never fly over or through the server's occupied airspace.
--- After the scan (found or not) we return home.
--- ============================================================
-
-local CARDINAL_OFFSETS = {
-    {dx =  0, dz = -1, name = "North", face = 0},
-    {dx =  1, dz =  0, name = "East",  face = 1},
-    {dx =  0, dz =  1, name = "South", face = 2},
-    {dx = -1, dz =  0, name = "West",  face = 3},
-}
-
-local function findChestAroundServer(serverPos)
-    print("=================================")
-    print("SEARCHING FOR CHEST/ME INTERFACE")
-    print("Server pos: " .. textutils.serialize(serverPos))
-    print("=================================")
-
-    updateStatus("searching", "finding chest")
-
-    local foundChest = nil
-    local foundME    = nil
-
-    for _, offset in ipairs(CARDINAL_OFFSETS) do
-        print("Checking " .. offset.name .. " side...")
-
-        -- Transit at serverPos.y+2 to clear the server and its top block.
-        -- Then descend to serverPos.y+1 (hover above the ME interface slot)
-        -- and use inspectDown() to identify what is below without landing on it.
-        -- If the block below is the ME interface, the chest must be 1 block
-        -- closer to the server (serverPos + offset * 1).
-        local approachPos = {
-            x = serverPos.x + offset.dx * 2,
-            y = serverPos.y + 2,
-            z = serverPos.z + offset.dz * 2,
-        }
-        local hoverPos = {
-            x = serverPos.x + offset.dx * 2,
-            y = serverPos.y + 1,
-            z = serverPos.z + offset.dz * 2,
-        }
-
-        if moveTo(approachPos) and moveTo(hoverPos) then
-            sleep(SCAN_DELAY)
-
-            -- Look down at the ME interface slot
-            local downOk, downBlock = turtle.inspectDown()
-            if downOk and downBlock and downBlock.name then
-                print("  " .. offset.name .. " below: " .. downBlock.name)
-
-                if not blockMatches(downBlock.name, ME_INTERFACE_PATTERNS) then
-                    print("  Not an ME interface (got " .. downBlock.name .. "), skipping.")
-                else
-
-                -- ME interface confirmed below — chest is 1 block closer to server
-                foundChest = {
-                    x = serverPos.x + offset.dx,
-                    y = serverPos.y,
-                    z = serverPos.z + offset.dz,
-                }
-                foundME = {
-                    x = serverPos.x + offset.dx * 2,
-                    y = serverPos.y,
-                    z = serverPos.z + offset.dz * 2,
-                }
-
-                print("FOUND ME interface below, chest inferred at " .. textutils.serialize(foundChest))
-                print("ME interface at " .. textutils.serialize(foundME))
-
-                chestPosition       = foundChest
-                meInterfacePosition = foundME
-
-                modem.transmit(CHANNEL, CHANNEL, {
-                    type = "chest_found",
-                    data = {
-                        turtleId            = assignedId,
-                        chestPosition       = foundChest,
-                        meInterfacePosition = foundME,
-                    }
-                })
-
-                break
-                end -- blockMatches ME interface
-            else
-                print("  " .. offset.name .. ": (nothing below)")
-            end
-        else
-            print("  WARNING: Could not reach hover position for " .. offset.name)
-        end
-    end
-
-    -- Always go home regardless of outcome
-    returnHome()
-
-    if foundChest then
-        return true
-    else
-        print("ERROR: No chest found around server!")
-        print("Make sure a chest is placed directly beside the server computer.")
-        return false
-    end
-end
-
--- ============================================================
--- SECTION 11: MESSAGE HANDLING
+-- SECTION 14: MESSAGE HANDLING
 -- ============================================================
 
 local function handleMessage(msg)
@@ -1375,64 +1086,53 @@ local function handleMessage(msg)
     if msg.type == "turtle_id_assigned" then
         if msg.data.computerId == computerID then
             assignedId = msg.data.assignedId
-            -- chestPosition and meInterfacePosition are NOT sent from server anymore.
-            -- The turtle discovers them itself via findChestAroundServer().
-
             saveId()
 
-            print("")
-            print("=================================")
-            print("Assigned ID: #" .. assignedId)
-            print("Fuel:   " .. turtle.getFuelLevel())
-            print("=================================")
+            log("")
+            log("=================================")
+            log("Assigned ID: #" .. assignedId)
+            log("Fuel: " .. turtle.getFuelLevel())
+            log("=================================")
 
-            -- Store server position as a no-fly zone regardless of which path we take
             if msg.data.serverPosition then
                 serverPosition = msg.data.serverPosition
-                SERVER_CLEAR_Y = serverPosition.y + 2  -- Must be >= this to pass over
-                print("Server no-fly zone set at " .. textutils.serialize(serverPosition))
+                SERVER_CLEAR_Y = serverPosition.y + 2
+                log("Server no-fly zone set at " .. textutils.serialize(serverPosition))
             end
 
-            -- If server already knows chest position (e.g. from a previous turtle
-            -- that reported it), it sends it along so we skip the scan.
             if msg.data.chestPosition then
-                chestPosition = msg.data.chestPosition
+                chestPosition       = msg.data.chestPosition
                 meInterfacePosition = msg.data.meInterfacePosition
-                -- Infer server position from chest if not provided directly
                 if not serverPosition and chestPosition then
-                    -- We don't know exact server pos, but set a safe clear Y
-                    -- based on chest Y so we still avoid flying through things
                     SERVER_CLEAR_Y = chestPosition.y + 2
                 end
-                print("Chest pos from server: " .. textutils.serialize(chestPosition))
-                print("ME pos from server:    " .. textutils.serialize(meInterfacePosition))
+                log("Chest pos from server: " .. textutils.serialize(chestPosition))
+                log("ME pos from server:    " .. textutils.serialize(meInterfacePosition))
             elseif msg.data.serverPosition then
-                -- Need to discover it ourselves; make sure we have fuel first.
-                print("Discovering chest/ME around server...")
+                log("Discovering chest/ME around server...")
                 if not ensureFuel() then
-                    print("ERROR: Cannot refuel before chest scan! Add coal to inventory.")
+                    log("ERROR: Cannot refuel before chest scan!")
                 elseif not findChestAroundServer(msg.data.serverPosition) then
-                    print("ERROR: Could not find chest! Tasks will fail until chest is found.")
+                    log("ERROR: Could not find chest!")
                 end
             else
-                print("WARNING: No server position provided, chest location unknown.")
+                log("WARNING: No server position provided, chest location unknown.")
             end
 
-            -- Top up fuel now that we (may) know where the chest is
             if turtle.getFuelLevel() < MIN_FUEL then
-                print("Fuel below minimum, refuelling now...")
+                log("Fuel below minimum, refuelling now...")
                 doRefuel()
             end
         end
 
     elseif msg.type == "scan_pedestals" then
         if msg.data.turtleId == assignedId then
-            print("Received scan task for altar #" .. msg.data.altarId)
+            log("Received scan task for altar #" .. msg.data.altarId)
             tasks = {{
-                type = "scan_pedestals",
-                altarId = msg.data.altarId,
+                type             = "scan_pedestals",
+                altarId          = msg.data.altarId,
                 catalystPosition = msg.data.catalystPosition,
-                assignedRows = msg.data.assignedRows
+                assignedRows     = msg.data.assignedRows
             }}
             processTasks()
         end
@@ -1442,39 +1142,32 @@ local function handleMessage(msg)
             tasks = msg.data.tasks
             local delay = msg.data.startDelay or 0
             if delay > 0 then
-                -- delay is in ticks (1 tick = 0.05s), convert to seconds
-                print("Waiting " .. (delay * 0.05) .. "s before starting tasks...")
+                log("Waiting " .. (delay * 0.05) .. "s before starting tasks...")
                 sleep(delay * 0.05)
             end
             processTasks()
         end
 
     elseif msg.type == "turtle_keepalive" then
-        -- Update peer position table (ignore our own keepalives)
         local d = msg.data
         if d and d.turtleId and d.turtleId ~= assignedId and d.position then
             peerPositions[d.turtleId] = {
-                x = d.position.x,
-                y = d.position.y,
-                z = d.position.z,
+                x = d.position.x, y = d.position.y, z = d.position.z,
                 time = os.epoch("utc")
             }
         end
 
     elseif msg.type == "abort_and_return" then
         if msg.data.turtleId == assignedId then
-            print("ABORT AND RETURN: returning items and going home")
+            log("ABORT AND RETURN")
             tasks = {}
             updateStatus("returning", "aborting infusion")
-            -- Return any held items to chest before going home
-            if chestPosition then
-                returnItemsToChest(chestPosition)
-            end
+            if chestPosition then returnItemsToChest(chestPosition) end
             returnHome()
         end
 
     elseif msg.type == "disaster_abort" then
-        print("DISASTER ABORT!")
+        log("DISASTER ABORT!")
         tasks = {}
         updateStatus("idle", "aborted")
         returnHome()
@@ -1482,61 +1175,51 @@ local function handleMessage(msg)
 end
 
 -- ============================================================
--- SECTION 12: MAIN LOOP
+-- SECTION 15: MAIN LOOP
 -- ============================================================
 
 local function main()
-    print("=================================")
-    print("Thaumcraft Turtle Worker v3.3")
-    print("=================================")
-    print("Computer ID: " .. computerID)
-    print("Fuel:        " .. turtle.getFuelLevel())
-    print("REFUEL_SLOT: " .. REFUEL_SLOT .. " (keep empty or coal only)")
-    print("=================================")
+    log("=================================")
+    log("Thaumcraft Turtle Worker v4.0")
+    log("=================================")
+    log("Computer ID: " .. computerID)
+    log("Fuel:        " .. turtle.getFuelLevel())
+    log("REFUEL_SLOT: " .. REFUEL_SLOT .. " (keep empty or coal only)")
+    log("=================================")
 
     if turtle.getFuelLevel() < 10 then
-        print("WARNING: Very low fuel!")
-        print("Add coal to slot " .. REFUEL_SLOT .. " if turtle cannot reach chest.")
+        log("WARNING: Very low fuel! Add coal to slot " .. REFUEL_SLOT)
     end
 
     local hasSavedId = loadSavedId()
 
     homePosition = getPosition(true)
-    if not homePosition then
-        error("ERROR: Cannot get GPS position!")
-    end
+    if not homePosition then error("ERROR: Cannot get GPS position!") end
+    log("Home: " .. textutils.serialize(homePosition))
 
-    print("Home: " .. textutils.serialize(homePosition))
     calibrateFacing()
 
     if hasSavedId then
-        print("Re-registering with ID #" .. assignedId)
+        log("Re-registering with ID #" .. assignedId)
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_reregister",
-            data = {
-                turtleId = assignedId,
-                computerId = computerID,
-                position = homePosition
-            }
+            data = { turtleId = assignedId, computerId = computerID, position = homePosition }
         })
     else
-        print("Registering as new turtle")
+        log("Registering as new turtle")
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_register",
-            data = {
-                computerId = computerID,
-                position = homePosition
-            }
+            data = { computerId = computerID, position = homePosition }
         })
     end
 
-    print("Waiting for server...")
+    log("Waiting for server...")
 
-    local registerTimer = os.startTimer(5)
+    local registerTimer  = os.startTimer(5)
     local keepaliveTimer = os.startTimer(30)
 
     while true do
-        local event, side, channel, replyChannel, message, distance = os.pullEvent()
+        local event, side, channel, _, message = os.pullEvent()
 
         if event == "modem_message" and channel == CHANNEL then
             handleMessage(message)
@@ -1546,10 +1229,7 @@ local function main()
                 if not assignedId then
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "turtle_register",
-                        data = {
-                            computerId = computerID,
-                            position = homePosition
-                        }
+                        data = { computerId = computerID, position = homePosition }
                     })
                 end
                 registerTimer = os.startTimer(5)
