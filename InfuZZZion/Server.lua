@@ -630,12 +630,20 @@ local function startInfusion(recipeId, recipe, altarIdx)
         end
     end
 
+    -- Stagger dispatch: each turtle gets its tasks 0.5s apart so they don't
+    -- all rush to the chest simultaneously and collide.
+    local dispatchDelay = 0
     for _, t in ipairs(turtles) do
         if #t.tasks > 0 then
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "turtle_tasks",
-                data = {turtleId = t.id, tasks = t.tasks}
+                data = {
+                    turtleId = t.id,
+                    tasks = t.tasks,
+                    startDelay = dispatchDelay   -- ticks to wait before starting (0.5s each)
+                }
             })
+            dispatchDelay = dispatchDelay + 10  -- 10 ticks = 0.5s per turtle
         end
     end
 
