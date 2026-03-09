@@ -350,6 +350,14 @@ local function drawRecipesTab()
     end
 end
 
+-- Shared button layout state — populated by drawAltarsTab, read by handleTouch
+local altarsLayout = {
+    listWidth = 0,
+    gridX = 0,
+    confirmButtonY = nil,
+    rescanButtonY = nil,
+}
+
 -- UPDATED: Draw altars tab with confirmation buttons
 local function drawAltarsTab()
     local y = 3
@@ -360,6 +368,10 @@ local function drawAltarsTab()
     end
     
     local listWidth = math.floor(width / 3)
+    altarsLayout.listWidth = listWidth
+    altarsLayout.gridX = listWidth + 3
+    altarsLayout.confirmButtonY = nil
+    altarsLayout.rescanButtonY = nil
     
     drawText(1, y, "Altars:", COLOR_BG, COLOR_HEADER)
     y = y + 1
@@ -491,12 +503,15 @@ local function drawAltarsTab()
             
             -- NEW: Action buttons
             if selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
-                -- Show CONFIRM button
+                -- Show CONFIRM then RESCAN
+                altarsLayout.confirmButtonY = statsY
                 drawButton(gridX, statsY, 15, "CONFIRM LAYOUT", COLOR_SUCCESS, COLOR_TEXT)
                 statsY = statsY + 1
+                altarsLayout.rescanButtonY = statsY
                 drawButton(gridX, statsY, 15, "RESCAN", COLOR_WARNING, COLOR_TEXT)
             elseif selectedAltar.layoutConfirmed then
-                -- Show RESCAN button only
+                -- Show RESCAN only
+                altarsLayout.rescanButtonY = statsY
                 drawButton(gridX, statsY, 15, "RESCAN", COLOR_BUTTON, COLOR_TEXT)
             else
                 -- Not scanned yet
@@ -568,41 +583,23 @@ local function handleTouch(x, y)
         return
     end
     
-    -- UPDATED: Altars tab with button handling
+    -- Altars tab touch handling
     if currentTab == "altars" then
-        print("DEBUG: In altars tab, selectedAltarId=" .. tostring(selectedAltarId))
-        
-        local listWidth = math.floor(width / 3)
-        
-        -- Altar list selection
+        local listWidth = altarsLayout.listWidth > 0 and altarsLayout.listWidth or math.floor(width / 3)
+        local gridX = altarsLayout.gridX > 0 and altarsLayout.gridX or (listWidth + 3)
+
+        -- Altar list selection (left column, rows 4+)
         if x <= listWidth and y >= 4 then
             local altarIdx = y - 3
             if altarIdx >= 1 and altarIdx <= #altars then
                 selectedAltarId = altars[altarIdx].id
-                print("DEBUG: Selected altar #" .. selectedAltarId)
                 draw()
             end
+            return
         end
-        
-        -- Button area (right side, bottom)
-        local gridX = listWidth + 3
-        local gridY = 5  -- Where grid starts (after title and legend)
-        
-        -- CRITICAL FIX: Calculate button Y positions same way as drawing code!
-        local statsY = gridY + 11  -- Same as in drawAltarsTab
-        statsY = statsY + 1  -- After "Pedestals:" line
-        statsY = statsY + 1  -- After "Stabilizers:" line
-        statsY = statsY + 2  -- Skip 2 lines (same as drawing code)
-        
-        local buttonY1 = statsY      -- First button (CONFIRM)
-        local buttonY2 = statsY + 1  -- Second button (RESCAN when not confirmed)
-        
-        print("DEBUG: Calculated button Y: buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2)
-        print("DEBUG: Click x=" .. x .. " (gridX=" .. gridX .. "), y=" .. y)
-        
+
+        -- Button area (right side) — positions come directly from draw code
         if selectedAltarId and x >= gridX then
-            print("DEBUG: Click in button area")
-            
             local selectedAltar = nil
             for _, altar in ipairs(altars) do
                 if altar.id == selectedAltarId then
@@ -610,75 +607,29 @@ local function handleTouch(x, y)
                     break
                 end
             end
-            
+
             if selectedAltar then
-                print("DEBUG: Found selected altar")
-                print("DEBUG: pedestalsScanned=" .. tostring(selectedAltar.pedestalsScanned))
-                print("DEBUG: layoutConfirmed=" .. tostring(selectedAltar.layoutConfirmed))
-                
-                -- CONFIRM LAYOUT button
-                if y == buttonY1 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
-                    print("DEBUG: CONFIRM button clicked for altar #" .. selectedAltarId)
-                    
-                    -- Send confirmation message
+                if altarsLayout.confirmButtonY and y == altarsLayout.confirmButtonY then
                     modem.transmit(CHANNEL, CHANNEL, {
                         type = "confirm_altar_layout",
-                        data = {
-                            altarId = selectedAltarId
-                        }
+                        data = { altarId = selectedAltarId }
                     })
-                    
-                    print("DEBUG: Sent confirm_altar_layout message")
                     showStatus("Confirming altar #" .. selectedAltarId .. "...")
-                    
-                    -- Request immediate status update (no sleep!)
-                    modem.transmit(CHANNEL, CHANNEL, {
-                        type = "request_status",
-                        data = {}
-                    })
-                    
-                    print("DEBUG: Requested status update")
+                    modem.transmit(CHANNEL, CHANNEL, { type = "request_status", data = {} })
                     draw()
-                
-                -- RESCAN button
-                elseif y == buttonY1 or y == buttonY2 then
-                    print("DEBUG: Checking RESCAN conditions")
-                    print("DEBUG: y=" .. y .. ", buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2)
-                    
-                    if (y == buttonY2 and selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed) or
-                       (y == buttonY1 and selectedAltar.layoutConfirmed) then
-                        
-                        print("DEBUG: RESCAN button clicked for altar #" .. selectedAltarId)
-                        
-                        modem.transmit(CHANNEL, CHANNEL, {
-                            type = "rescan_altar",
-                            data = {
-                                altarId = selectedAltarId
-                            }
-                        })
-                        
-                        print("DEBUG: Sent rescan_altar message")
-                        showStatus("Requesting rescan of altar #" .. selectedAltarId .. "...")
-                        
-                        modem.transmit(CHANNEL, CHANNEL, {
-                            type = "request_status",
-                            data = {}
-                        })
-                        
-                        draw()
-                    else
-                        print("DEBUG: RESCAN conditions not met")
-                    end
-                else
-                    print("DEBUG: No button matched at y=" .. y .. " (buttonY1=" .. buttonY1 .. ", buttonY2=" .. buttonY2 .. ")")
+
+                elseif altarsLayout.rescanButtonY and y == altarsLayout.rescanButtonY then
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "rescan_altar",
+                        data = { altarId = selectedAltarId }
+                    })
+                    showStatus("Requesting rescan of altar #" .. selectedAltarId .. "...")
+                    modem.transmit(CHANNEL, CHANNEL, { type = "request_status", data = {} })
+                    draw()
                 end
-            else
-                print("DEBUG: selectedAltar is nil!")
             end
-        else
-            print("DEBUG: Click not in button area (x=" .. x .. " < gridX=" .. gridX .. " or no selectedAltarId)")
         end
-        
+
         return
     end
     
