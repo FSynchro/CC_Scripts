@@ -363,10 +363,31 @@ local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerP
             print("  Pedestals: " .. #altar.pedestals)
             print("  Stabilizers: " .. #altar.stabilizers)
 
+            -- Sort pedestals in Thaumcraft infusion order:
+            -- Cardinals first (N, S, W, E), then diagonals (NE, SW, SE, NW),
+            -- then anything further out by distance.
+            -- Within each ring, N=south(-Z), S=north(+Z), W=west(-X), E=east(+X)
+            -- (Minecraft Z: negative = north, positive = south)
+            local function pedestalOrder(pos, catalyst)
+                local dx = pos.x - catalyst.x
+                local dz = pos.z - catalyst.z
+                local dist = math.abs(dx) + math.abs(dz)
+                -- Cardinals: exactly one axis non-zero
+                if dx == 0 and dz ~= 0 then
+                    if dz < 0 then return dist * 100 + 1 end  -- North
+                    if dz > 0 then return dist * 100 + 2 end  -- South
+                elseif dz == 0 and dx ~= 0 then
+                    if dx < 0 then return dist * 100 + 3 end  -- West
+                    if dx > 0 then return dist * 100 + 4 end  -- East
+                -- Diagonals
+                elseif dx > 0 and dz < 0 then return dist * 100 + 5 end  -- NE
+                elseif dx < 0 and dz > 0 then return dist * 100 + 6 end  -- SW
+                elseif dx > 0 and dz > 0 then return dist * 100 + 7 end  -- SE
+                elseif dx < 0 and dz < 0 then return dist * 100 + 8 end  -- NW
+                return dist * 100 + 9
+            end
             table.sort(altar.pedestals, function(a, b)
-                local distA = math.abs(a.x - altar.catalyst.x) + math.abs(a.z - altar.catalyst.z)
-                local distB = math.abs(b.x - altar.catalyst.x) + math.abs(b.z - altar.catalyst.z)
-                return distA < distB
+                return pedestalOrder(a, altar.catalyst) < pedestalOrder(b, altar.catalyst)
             end)
 
             altar.pedestalsScanned = true
