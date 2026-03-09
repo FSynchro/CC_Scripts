@@ -3,7 +3,7 @@
 
 local CHANNEL = 1742
 local ID_FILE = "turtle_id.dat"
-local PASTEBIN_KEY = "YOUR_PASTEBIN_API_KEY"  -- get free key at pastebin.com/doc/api
+local PASTEBIN_KEY = "4H0FPE9BW0Yf1FT_GkPygjlmIREfylxd"  -- get free key at pastebin.com/doc/api
 local SCAN_DELAY = 0.5
 local MOVE_DELAY = 0.3
 local GPS_VERIFY_RETRIES = 3
