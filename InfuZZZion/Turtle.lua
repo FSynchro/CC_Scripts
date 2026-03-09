@@ -678,7 +678,7 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                 -- We scan from one block above the pedestal surface.
                 local scanPos = {
                     x = catalystPos.x + xOffset,
-                    y = catalystPos.y + 1,   -- one above the pedestal/ground surface
+                    y = catalystPos.y + 2,   -- two above surface so turtle clears pedestal tops
                     z = catalystPos.z + zOffset
                 }
 
@@ -696,7 +696,7 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                     -- The pedestal itself is one block below our scan position
                     local pedestalPos = {
                         x = scanPos.x,
-                        y = scanPos.y - 1,
+                        y = scanPos.y - 1,   -- one below scan height = pedestal surface
                         z = scanPos.z
                     }
                     local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
