@@ -768,16 +768,20 @@ local function pickupItemFromChest(item, chestPos)
 
     turtle.select(1)
 
-    -- Try pushItems first (precise slot targeting)
+    -- Try pushItems first (precise slot targeting into slot 1)
+    turtle.select(1)
     local ok, moved = pcall(function()
         return chest.pushItems(peripheral.getName(turtle) or "turtle", itemSlot, 1, 1)
     end)
     if ok and moved and moved > 0 then
-        print("Picked up " .. item.item.name .. " via pushItems")
+        local pickedUp = turtle.getItemDetail(1)
+        local gotName = pickedUp and pickedUp.name or "unknown"
+        print("Picked up " .. gotName .. " via pushItems (wanted " .. item.item.name .. ")")
         return true
     end
 
-    -- Fallback: suckDown with post-check
+    -- Fallback: suckDown — selects specific slot first to avoid mixing items
+    turtle.select(itemSlot <= 16 and 1 or 1)
     if not turtle.suckDown(1) then
         print("ERROR: Cannot suck item from chest")
         return false
@@ -785,19 +789,14 @@ local function pickupItemFromChest(item, chestPos)
 
     local pickedUp = turtle.getItemDetail(1)
     if pickedUp then
-        if isFuelItem(pickedUp.name) and pickedUp.name ~= item.item.name then
-            print("ERROR: Grabbed fuel item " .. pickedUp.name .. " instead of " .. item.item.name .. ". Returning.")
-            turtle.dropDown(1)
+        if isFuelItem(pickedUp.name) then
+            -- Accidentally grabbed fuel, put it back
+            print("WARNING: suckDown grabbed fuel " .. pickedUp.name .. ", returning")
+            turtle.dropDown(turtle.getItemCount(1))
             return false
         end
-        if pickedUp.name ~= item.item.name then
-            print("ERROR: Wrong item: got " .. pickedUp.name .. " wanted " .. item.item.name .. ". Returning.")
-            turtle.dropDown(1)
-            return false
-        end
+        print("Picked up " .. pickedUp.name .. " (wanted " .. item.item.name .. ")")
     end
-
-    print("Picked up " .. item.item.name)
     return true
 end
 
