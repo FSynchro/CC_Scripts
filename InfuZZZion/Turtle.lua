@@ -249,6 +249,46 @@ local function facingFromMove(before, after)
     return nil  -- no horizontal movement detected
 end
 
+-- Determine actual facing by moving one step and comparing GPS positions.
+-- Steps back to restore position. Returns true if calibration succeeded.
+local function calibrateFacing()
+    local before = getPosition(true)
+    if not before then return false end
+
+    -- Try to move forward; if blocked try turning until we can
+    local moved = false
+    for attempt = 1, 4 do
+        if turtle.forward() then
+            moved = true
+            break
+        end
+        turtle.turnRight()
+        facing = (facing + 1) % 4
+    end
+    if not moved then
+        print("WARNING: Cannot calibrate facing (all directions blocked?)")
+        return false
+    end
+
+    sleep(0.5)  -- let GPS update
+    local after = getPosition(true)
+    if after then
+        local derived = facingFromMove(before, after)
+        if derived then
+            facing = derived
+            print("Facing calibrated: " .. ({"North","East","South","West"})[facing+1])
+        end
+    end
+
+    -- Step back to restore position
+    turtle.turnRight()
+    turtle.turnRight()
+    turtle.forward()
+    turtle.turnRight()
+    turtle.turnRight()
+    return true
+end
+
 local function moveTo(target)
     if turtle.getFuelLevel() == 0 then
         print("ERROR: Zero fuel, cannot move!")
@@ -362,11 +402,14 @@ local function moveTo(target)
             else
                 local wantFacing = pos.x < target.x and 1 or 3
                 turnToFace(wantFacing)
+                local beforeMove = pos
                 if moveForward() then
                     stuckCount = 0
                     stepsSinceGPS = stepsSinceGPS + 1
-                    facing = wantFacing
-                    pos = { x = pos.x + (wantFacing == 1 and 1 or -1), y = pos.y, z = pos.z }
+                    local newPos = { x = pos.x + (wantFacing == 1 and 1 or -1), y = pos.y, z = pos.z }
+                    local derived = facingFromMove(beforeMove, newPos)
+                    facing = derived or wantFacing
+                    pos = newPos
                 else
                     stuckCount = stuckCount + 1
                     if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
@@ -391,11 +434,14 @@ local function moveTo(target)
             else
                 local wantFacing = pos.z < target.z and 2 or 0
                 turnToFace(wantFacing)
+                local beforeMove = pos
                 if moveForward() then
                     stuckCount = 0
                     stepsSinceGPS = stepsSinceGPS + 1
-                    facing = wantFacing
-                    pos = { x = pos.x, y = pos.y, z = pos.z + (wantFacing == 2 and 1 or -1) }
+                    local newPos = { x = pos.x, y = pos.y, z = pos.z + (wantFacing == 2 and 1 or -1) }
+                    local derived = facingFromMove(beforeMove, newPos)
+                    facing = derived or wantFacing
+                    pos = newPos
                 else
                     stuckCount = stuckCount + 1
                     if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
@@ -567,12 +613,19 @@ local function returnHome()
         return false
     end
 
-    local intermediatePos = {
-        x = homePosition.x,
-        y = current.y,
-        z = homePosition.z
-    }
+    -- Ascend to a safe clearance height before moving horizontally.
+    -- This avoids walking through the chest/server structure at ground level.
+    local safeY = math.max(homePosition.y, current.y) + 2
+    if current.y < safeY then
+        local ascendPos = { x = current.x, y = safeY, z = current.z }
+        if not moveTo(ascendPos) then
+            print("ERROR: Cannot ascend for home return!")
+            return false
+        end
+    end
 
+    -- Move X/Z at safe height, then descend to home Y
+    local intermediatePos = { x = homePosition.x, y = safeY, z = homePosition.z }
     if not moveTo(intermediatePos) then
         print("ERROR: Cannot reach home X,Z!")
         return false
@@ -1401,6 +1454,7 @@ local function main()
     end
 
     print("Home: " .. textutils.serialize(homePosition))
+    calibrateFacing()
 
     if hasSavedId then
         print("Re-registering with ID #" .. assignedId)
