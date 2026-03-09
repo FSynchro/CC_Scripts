@@ -28,6 +28,12 @@ local computerID = os.getComputerID()
 local assignedId = nil
 local chestPosition = nil
 local meInterfacePosition = nil
+
+-- Peer collision avoidance: map of turtleId -> {x,y,z,time}
+-- Updated whenever we receive a turtle_keepalive from another turtle.
+local peerPositions = {}
+local PEER_TIMEOUT = 5000  -- ms: forget peer position if not seen in 5s
+local CELL_WAIT_TICKS = 4  -- ticks to wait when target cell is occupied
 local serverPosition = nil       -- Received from server; used as a no-fly zone
 local SERVER_CLEAR_Y = nil       -- Must be >= this Y to pass over the server column
 local altarZoneCenter = nil      -- Catalyst position of active altar; triggers ascent nearby
@@ -116,6 +122,41 @@ local function updateStatus(status, statusDetail)
     })
 end
 
+-- Check if a given {x,y,z} cell is currently occupied by a known peer turtle.
+local function isCellOccupiedByPeer(cell)
+    local now = os.epoch("utc")
+    for tid, p in pairs(peerPositions) do
+        if now - p.time < PEER_TIMEOUT then
+            if p.x == cell.x and p.y == cell.y and p.z == cell.z then
+                return true, tid
+            end
+        else
+            peerPositions[tid] = nil  -- expired, clean up
+        end
+    end
+    return false
+end
+
+-- Non-blocking check for incoming peer keepalives (drains modem buffer quickly).
+local function pollPeerPositions()
+    local deadline = os.epoch("utc") + 50  -- spend at most 50ms polling
+    while os.epoch("utc") < deadline do
+        local event, side, ch, _, msg = os.pullEventRaw("modem_message")
+        if event ~= "modem_message" then break end
+        if ch == CHANNEL and type(msg) == "table" and msg.type == "turtle_keepalive" then
+            local d = msg.data
+            if d and d.turtleId and d.turtleId ~= assignedId and d.position then
+                peerPositions[d.turtleId] = {
+                    x = d.position.x,
+                    y = d.position.y,
+                    z = d.position.z,
+                    time = os.epoch("utc")
+                }
+            end
+        end
+    end
+end
+
 local function sendKeepalive()
     if assignedId then
         modem.transmit(CHANNEL, CHANNEL, {
@@ -153,19 +194,62 @@ local function turnToFace(targetFacing)
     end
 end
 
+-- Broadcast our position and drain any incoming peer keepalives before a move.
+local function preMove()
+    sendKeepalive()
+    pollPeerPositions()
+end
+
+-- Compute the cell directly in front given current facing.
+local function cellAhead(pos, f)
+    if f == 0 then return { x=pos.x,   y=pos.y, z=pos.z-1 }
+    elseif f == 1 then return { x=pos.x+1, y=pos.y, z=pos.z }
+    elseif f == 2 then return { x=pos.x,   y=pos.y, z=pos.z+1 }
+    else               return { x=pos.x-1, y=pos.y, z=pos.z }
+    end
+end
+
 local function moveForward()
+    preMove()
+    -- If a peer occupies the cell ahead, wait up to ~2s before trying.
+    local pos = getPosition(false)  -- cached, no GPS call
+    if pos then
+        local ahead = cellAhead(pos, facing)
+        local waited = 0
+        while waited < 4 do
+            local occ, tid = isCellOccupiedByPeer(ahead)
+            if not occ then break end
+            print("  Waiting: turtle #" .. tid .. " is in the way")
+            sleep(0.5)
+            pollPeerPositions()
+            waited = waited + 1
+        end
+    end
     if not turtle.forward() then
-        turtle.dig()
-        sleep(0.2)
-        if not turtle.forward() then return false end
+        -- Don't dig — could be another turtle. Just report failure.
+        return false
     end
     sleep(MOVE_DELAY)
     return true
 end
 
 local function moveUp()
+    preMove()
+    local pos = getPosition(false)
+    if pos then
+        local above = { x=pos.x, y=pos.y+1, z=pos.z }
+        local waited = 0
+        while waited < 4 do
+            local occ, tid = isCellOccupiedByPeer(above)
+            if not occ then break end
+            print("  Waiting: turtle #" .. tid .. " is above")
+            sleep(0.5)
+            pollPeerPositions()
+            waited = waited + 1
+        end
+    end
     if not turtle.up() then
-        turtle.digUp()
+        turtle.digUp()  -- still dig blocks (not turtles) above
         sleep(0.2)
         if not turtle.up() then return false end
     end
@@ -174,6 +258,7 @@ local function moveUp()
 end
 
 local function moveDown()
+    preMove()
     if not turtle.down() then
         turtle.digDown()
         sleep(0.2)
@@ -867,12 +952,38 @@ local function placeItemOnPedestal(item, position, chestPos)
 
     updateStatus("working", "placing on pedestal")
 
-    -- Transit at y+2 to clear other pedestals, then drop to y+1 to place.
-    local transitPos = { x = position.x, y = position.y + 2, z = position.z }
-    local dropPos    = { x = position.x, y = position.y + 1, z = position.z }
+    -- Must ascend in place before moving horizontally — pedestals are at ground
+    -- level and the altar area is full of blocks we cannot walk through.
+    local safeY = position.y + 2
+    local curPos = getPosition(true)
+    if not curPos then
+        print("ERROR: Lost GPS before pedestal approach")
+        returnItemsToChest(chestPos)
+        return false
+    end
 
-    if not moveTo(transitPos) or not moveTo(dropPos) then
-        print("ERROR: Cannot move to pedestal, returning item to chest")
+    if curPos.y < safeY then
+        local ascendPos = { x = curPos.x, y = safeY, z = curPos.z }
+        if not moveTo(ascendPos) then
+            print("ERROR: Cannot ascend before pedestal approach")
+            returnItemsToChest(chestPos)
+            return false
+        end
+    end
+
+    local transitPos = { x = position.x, y = safeY, z = position.z }
+
+    if not moveTo(transitPos) then
+        print("ERROR: Cannot move above pedestal, returning item to chest")
+        returnItemsToChest(chestPos)
+        return false
+    end
+
+    -- We are now at position.y+2, directly above the pedestal.
+    -- Descend one step to position.y+1 (the air block above the pedestal)
+    -- using a raw turtle.down() — no moveTo so we don't trigger stuck logic.
+    if not turtle.down() then
+        print("ERROR: Cannot descend to pedestal drop height, returning item to chest")
         returnItemsToChest(chestPos)
         return false
     end
@@ -880,9 +991,11 @@ local function placeItemOnPedestal(item, position, chestPos)
     turtle.select(1)
     if not turtle.dropDown(1) then
         print("ERROR: Cannot drop item onto pedestal, returning item to chest")
+        turtle.up()  -- ascend back before returning
         returnItemsToChest(chestPos)
         return false
     end
+    turtle.up()  -- ascend back to transit height before next move
 
     print("Item placed!")
     return true
@@ -1247,7 +1360,25 @@ local function handleMessage(msg)
     elseif msg.type == "turtle_tasks" then
         if msg.data.turtleId == assignedId then
             tasks = msg.data.tasks
+            local delay = msg.data.startDelay or 0
+            if delay > 0 then
+                -- delay is in ticks (1 tick = 0.05s), convert to seconds
+                print("Waiting " .. (delay * 0.05) .. "s before starting tasks...")
+                sleep(delay * 0.05)
+            end
             processTasks()
+        end
+
+    elseif msg.type == "turtle_keepalive" then
+        -- Update peer position table (ignore our own keepalives)
+        local d = msg.data
+        if d and d.turtleId and d.turtleId ~= assignedId and d.position then
+            peerPositions[d.turtleId] = {
+                x = d.position.x,
+                y = d.position.y,
+                z = d.position.z,
+                time = os.epoch("utc")
+            }
         end
 
     elseif msg.type == "abort_and_return" then
