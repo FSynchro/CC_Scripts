@@ -274,9 +274,23 @@ local function moveTo(target)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
     local stuckCount = 0
+    local stepsSinceGPS = 0
+    local GPS_SYNC_INTERVAL = 8  -- re-sync GPS every 8 steps to catch any drift
 
     while true do
-        pos = getPosition(true)
+        -- Re-query GPS only periodically or when we think we've arrived.
+        -- Dead-reckoning (pos updated after each move) is accurate enough between
+        -- syncs and avoids the stale-GPS bug that causes the turtle to reverse.
+        if stepsSinceGPS >= GPS_SYNC_INTERVAL or
+           (pos.x == target.x and pos.y == target.y and pos.z == target.z) then
+            local gpsPos = getPosition(true)
+            if gpsPos then
+                pos = gpsPos
+                stepsSinceGPS = 0
+            end
+            -- If GPS unavailable, keep using dead-reckoned pos
+        end
+
         if not pos then print("ERROR: Lost GPS!") return false end
 
         -- Check if we have arrived
@@ -348,6 +362,7 @@ local function moveTo(target)
                 turnToFace(wantFacing)
                 if moveForward() then
                     stuckCount = 0
+                    stepsSinceGPS = stepsSinceGPS + 1
                     facing = wantFacing
                     pos = { x = pos.x + (wantFacing == 1 and 1 or -1), y = pos.y, z = pos.z }
                 else
@@ -376,6 +391,7 @@ local function moveTo(target)
                 turnToFace(wantFacing)
                 if moveForward() then
                     stuckCount = 0
+                    stepsSinceGPS = stepsSinceGPS + 1
                     facing = wantFacing
                     pos = { x = pos.x, y = pos.y, z = pos.z + (wantFacing == 2 and 1 or -1) }
                 else
