@@ -21,7 +21,7 @@ local FUEL_ITEMS = {
 -- Logging
 local logBuffer = {}
 local function log(msg)
-    local line = "[" .. os.date and os.date("!%H:%M:%S") or tostring(os.epoch("utc")/1000) .. "] " .. tostring(msg)
+    local line = "[" .. tostring(math.floor(os.epoch("utc") / 1000)) .. "] " .. tostring(msg)
     table.insert(logBuffer, line)
     print(msg)
     if #logBuffer > 300 then table.remove(logBuffer, 1) end  -- keep last 300 lines
