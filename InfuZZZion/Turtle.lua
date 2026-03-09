@@ -671,9 +671,22 @@ local function returnHome()
         return false
     end
 
-    if not moveTo(homePosition) then
-        log("ERROR: Cannot reach home Y!") uploadLog("home_y_fail")
-        return false
+    -- Descend directly rather than using moveTo — avoids GPS drift causing
+    -- spurious X/Z corrections mid-descent that get us stuck.
+    local cur = getPosition(true)
+    if cur then
+        local stepsDown = cur.y - homePosition.y
+        for i = 1, stepsDown do
+            if not turtle.down() then
+                -- Something below — try once more after a moment
+                sleep(0.5)
+                if not turtle.down() then
+                    log("ERROR: Cannot descend to home Y at step " .. i)
+                    uploadLog("home_y_fail")
+                    return false
+                end
+            end
+        end
     end
 
     log("Home!")
