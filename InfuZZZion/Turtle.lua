@@ -1058,7 +1058,6 @@ local function executeTask(task)
 
     if task.type == "scan_pedestals" then
         local pedestals, stabilizers = scanPedestalsAroundCatalyst(task.catalystPosition, task.assignedRows)
-
         modem.transmit(CHANNEL, CHANNEL, {
             type = "pedestals_scanned",
             data = {
@@ -1068,33 +1067,71 @@ local function executeTask(task)
                 turtleId            = assignedId
             }
         })
-        return returnHome()
-
-    elseif task.type == "place_catalyst" then
-        updateStatus("working", "placing catalyst")
-        local cp = task.chestPosition or chestPosition
-        if not cp then log("ERROR: No chest position for place_catalyst!") return false end
-        local result = placeItemOnPedestal(task.item, task.position, cp)
         returnHome()
-        return result
+        return true
 
-    elseif task.type == "place_ingredient" then
-        updateStatus("working", "placing ingredient")
+    elseif task.type == "place_catalyst" or task.type == "place_ingredient" then
+        local taskLabel = task.type == "place_catalyst" and "catalyst" or "ingredient"
+        updateStatus("working", "placing " .. taskLabel)
         local cp = task.chestPosition or chestPosition
-        if not cp then log("ERROR: No chest position for place_ingredient!") return false end
+        if not cp then
+            log("ERROR: No chest position for " .. task.type .. "!")
+            return false
+        end
+
         local result = placeItemOnPedestal(task.item, task.position, cp)
-        returnHome()
+
+        if result then
+            -- Report success to server so it can dispatch our next slot
+            log("Reporting item_placed for slot #" .. tostring(task.slotIndex))
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "item_placed",
+                data = {
+                    turtleId   = assignedId,
+                    altarId    = task.altarId,
+                    slotIndex  = task.slotIndex
+                }
+            })
+            -- Return home and wait — server will send next task if there is one
+            returnHome()
+        else
+            -- Failed — return any held items and go home
+            returnItemsToChest(cp)
+            returnHome()
+        end
         return result
 
     elseif task.type == "retrieve_result" then
         updateStatus("working", "retrieving result")
         local result = retrieveItemFromPedestal(task.position, task.meInterfacePosition)
+
+        if result then
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "item_cleared",
+                data = {
+                    turtleId  = assignedId,
+                    altarId   = task.altarId,
+                    slotIndex = task.slotIndex
+                }
+            })
+        end
         returnHome()
         return result
 
     elseif task.type == "clear_pedestal" then
         updateStatus("working", "clearing pedestal")
         local result = clearPedestal(task.position, task.meInterfacePosition)
+
+        if result then
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "item_cleared",
+                data = {
+                    turtleId  = assignedId,
+                    altarId   = task.altarId,
+                    slotIndex = task.slotIndex
+                }
+            })
+        end
         returnHome()
         return result
     end
