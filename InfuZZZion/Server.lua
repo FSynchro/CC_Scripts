@@ -596,25 +596,38 @@ local function startInfusion(recipeId, recipe, altarIdx)
 
     activeInfusions[altar.id] = infusion
 
+    -- Clear any leftover tasks from previous runs
+    for _, t in ipairs(turtles) do
+        t.tasks = {}
+    end
+
+    -- Turtle 1 gets the catalyst. Ingredients are distributed round-robin
+    -- across ALL turtles starting from turtle 1, so every turtle gets work.
+    -- Each turtle gets a flat list of tasks; it processes them sequentially,
+    -- going home between each one.
+    local turtleIdx = 1
+
+    -- Catalyst first, on turtle 1.
+    -- altar.catalyst is the computer position (y=68); the catalyst pedestal
+    -- sits one block above it (y=69), so we pass y+1 as the drop target.
     if turtles[1] then
         table.insert(turtles[1].tasks, {
             type = "place_catalyst",
             item = recipe.catalyst,
-            position = altar.catalyst,
+            position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
             altarCatalyst = altar.catalyst,
             chestPosition = chestPosition
         })
-        updateTurtleStatus(turtles[1].id, "working", "placing catalyst")
     end
 
-    local turtleIdx = 2
+    -- Ingredients distributed round-robin across all turtles
     for i, ingredient in ipairs(recipe.ingredients) do
         if i > #altar.pedestals then
-            print("WARNING: More ingredients than pedestals!")
+            print("WARNING: More ingredients (" .. #recipe.ingredients .. ") than pedestals (" .. #altar.pedestals .. ")!")
             break
         end
 
-        local t = turtles[turtleIdx] or turtles[1]
+        local t = turtles[turtleIdx]
         if t then
             table.insert(t.tasks, {
                 type = "place_ingredient",
@@ -623,27 +636,29 @@ local function startInfusion(recipeId, recipe, altarIdx)
                 altarCatalyst = altar.catalyst,
                 chestPosition = chestPosition
             })
-            updateTurtleStatus(t.id, "working", "placing ingredients")
-
-            turtleIdx = turtleIdx + 1
-            if turtleIdx > #turtles then turtleIdx = 1 end
         end
+
+        turtleIdx = turtleIdx + 1
+        if turtleIdx > #turtles then turtleIdx = 1 end
     end
 
-    -- Stagger dispatch: each turtle gets its tasks 0.5s apart so they don't
-    -- all rush to the chest simultaneously and collide.
+    -- Dispatch each turtle that has tasks, staggered 10 ticks (0.5s) apart
+    -- so they don't all rush to the chest simultaneously.
     local dispatchDelay = 0
     for _, t in ipairs(turtles) do
         if #t.tasks > 0 then
+            print("Dispatching " .. #t.tasks .. " task(s) to turtle #" .. t.id ..
+                  " (delay=" .. dispatchDelay .. " ticks)")
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "turtle_tasks",
                 data = {
                     turtleId = t.id,
                     tasks = t.tasks,
-                    startDelay = dispatchDelay   -- ticks to wait before starting (0.5s each)
+                    startDelay = dispatchDelay
                 }
             })
-            dispatchDelay = dispatchDelay + 10  -- 10 ticks = 0.5s per turtle
+            updateTurtleStatus(t.id, "working", "placing items")
+            dispatchDelay = dispatchDelay + 10
         end
     end
 
@@ -669,32 +684,56 @@ local function completeInfusion(altarId, resultItem)
 
     local altar = nil
     for _, a in ipairs(altars) do
-        if a.id == altarId then altar = a break end
+        if a.id == altarId then altar = a; break end
     end
     if not altar then return end
 
+    -- Clear all turtle task queues before assigning retrieval/clear work
+    for _, t in ipairs(turtles) do
+        t.tasks = {}
+    end
+
+    -- Turtle 1 retrieves the result from the catalyst pedestal (one above the computer)
     if turtles[1] then
         table.insert(turtles[1].tasks, {
             type = "retrieve_result",
-            position = altar.catalyst,
+            position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
             meInterfacePosition = meInterfacePosition
         })
+    end
 
-        for _, pedestalPos in ipairs(altar.pedestals) do
-            table.insert(turtles[1].tasks, {
+    -- Distribute pedestal clearing round-robin across all turtles
+    local turtleIdx = 1
+    for _, pedestalPos in ipairs(altar.pedestals) do
+        local t = turtles[turtleIdx]
+        if t then
+            table.insert(t.tasks, {
                 type = "clear_pedestal",
                 position = pedestalPos,
                 altarCatalyst = altar.catalyst,
                 meInterfacePosition = meInterfacePosition
             })
         end
+        turtleIdx = turtleIdx + 1
+        if turtleIdx > #turtles then turtleIdx = 1 end
+    end
 
-        updateTurtleStatus(turtles[1].id, "working", "clearing altar")
-
-        modem.transmit(CHANNEL, CHANNEL, {
-            type = "turtle_tasks",
-            data = {turtleId = turtles[1].id, tasks = turtles[1].tasks}
-        })
+    -- Dispatch with stagger
+    local dispatchDelay = 0
+    for _, t in ipairs(turtles) do
+        if #t.tasks > 0 then
+            print("Dispatching " .. #t.tasks .. " clear task(s) to turtle #" .. t.id)
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "turtle_tasks",
+                data = {
+                    turtleId = t.id,
+                    tasks = t.tasks,
+                    startDelay = dispatchDelay
+                }
+            })
+            updateTurtleStatus(t.id, "working", "clearing altar")
+            dispatchDelay = dispatchDelay + 10
+        end
     end
 
     altar.busy = false
