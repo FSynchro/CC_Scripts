@@ -5,7 +5,6 @@
 
 local CHANNEL        = 1742
 local ID_FILE        = "turtle_id.dat"
-local PASTEBIN_KEY   = "4H0FPE9BW0Yf1FT_GkPygjlmIREfylxd"  -- get free key at pastebin.com/doc/api
 local SCAN_DELAY     = 0.5
 local MOVE_DELAY     = 0.3
 local GPS_VERIFY_RETRIES = 3
@@ -32,24 +31,17 @@ local function log(msg)
     if #logBuffer > 300 then table.remove(logBuffer, 1) end
 end
 
-local function uploadLog(label)
-    if not http then log("HTTP not available, cannot upload log") return nil end
-    local body = "=== Turtle Log: " .. tostring(label) .. " ===\n" .. table.concat(logBuffer, "\n")
-    local ok, err = pcall(function()
-        local resp = http.post("https://pastebin.com/api/api_post.php",
-            "api_dev_key=" .. PASTEBIN_KEY ..
-            "&api_option=paste" ..
-            "&api_paste_code=" .. textutils.urlEncode(body) ..
-            "&api_paste_name=" .. textutils.urlEncode("Turtle#" .. tostring(assignedId) .. "_" .. tostring(label)) ..
-            "&api_paste_expire_date=1H"
-        )
-        if resp then
-            local url = resp.readAll()
-            resp.close()
-            log("Log uploaded: " .. tostring(url))
-        end
-    end)
-    if not ok then log("Upload failed: " .. tostring(err)) end
+-- Save the general log buffer to a local file.
+local function saveLog(label)
+    local filename = "log_" .. tostring(label) .. "_" .. tostring(math.floor(os.epoch("utc") / 1000)) .. ".log"
+    local f = fs.open(filename, "w")
+    if f then
+        for _, line in ipairs(logBuffer) do f.writeLine(line) end
+        f.close()
+        log("Log saved: " .. filename)
+    else
+        log("ERROR: Could not write log " .. filename)
+    end
 end
 
 -- ============================================================
@@ -152,42 +144,43 @@ local function sendKeepalive()
 end
 
 -- ============================================================
--- SECTION 6: MOVEMENT  (the single source of motion truth)
+-- SECTION 6: MOVEMENT
 --
--- Design:
---   flyTo(target)  — the only function that moves the turtle.
+-- flyTo(target) is the only function that moves the turtle.
 --
---   Order of axes:  ascend → X → Z → descend
---   This means the turtle always clears whatever is at its current
---   height before moving horizontally, and only descends once it is
---   directly above the destination column.
+-- Movement order:
+--   1. If target.y > current.y  → ascend FIRST before any horizontal movement
+--   2. Move X axis to target.x
+--   3. Move Z axis to target.z
+--   4. If target.y < current.y  → descend LAST after X and Z are correct
 --
---   No caller ever calls turtle.up/down/forward directly.
---   No caller pre-ascends or post-descends outside flyTo.
---   Callers that need to operate "from above" (inspect, pick up, drop)
---   simply pass  {x, targetY+1, z}  as their destination.
+-- Obstacle handling (horizontal):
+--   If X is blocked  → try up to 5 Z sidesteps to get around it, then retry X
+--   If Z is blocked  → try up to 5 X sidesteps to get around it, then retry Z
+--   If still blocked → ascend one level and retry horizontal movement
+--   After 10 failed attempts → give up, return false
 --
 -- No-fly zones:
---   • serverPosition column: ascend to SERVER_CLEAR_Y before crossing it.
+--   serverPosition column: ascend to SERVER_CLEAR_Y before crossing it.
 --
 -- GPS policy:
---   Dead-reckon between moves; re-sync from GPS every GPS_SYNC_INTERVAL
---   steps.  On arrival, always do a final GPS verify.
+--   Always query GPS fresh at the start of flyTo and after every
+--   sidestep manoeuvre. Dead-reckon only between normal forward steps;
+--   re-sync from GPS every GPS_SYNC_INTERVAL steps.
 --
 -- Facing convention: 0=North(-Z)  1=East(+X)  2=South(+Z)  3=West(-X)
 -- ============================================================
 
-local GPS_SYNC_INTERVAL = 8   -- steps between GPS re-queries mid-flight
-local MAX_IDLE          = 16  -- bail if Manhattan distance doesn't shrink for this many iterations
+local GPS_SYNC_INTERVAL = 6   -- steps between GPS re-queries mid-flight
 
--- Derive the facing we actually had from a before→after GPS delta.
+-- Derive facing from a GPS before→after delta (used only in calibrateFacing).
 local function facingFromMove(before, after)
     local dx = after.x - before.x
     local dz = after.z - before.z
-    if dx ==  1 then return 1 end  -- East
-    if dx == -1 then return 3 end  -- West
-    if dz ==  1 then return 2 end  -- South
-    if dz == -1 then return 0 end  -- North
+    if dx ==  1 then return 1 end
+    if dx == -1 then return 3 end
+    if dz ==  1 then return 2 end
+    if dz == -1 then return 0 end
     return nil
 end
 
@@ -199,18 +192,16 @@ local function turnToFace(want)
         turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
     elseif diff == 3 then
         turtle.turnLeft();  facing = (facing - 1) % 4; sleep(MOVE_DELAY)
-    else  -- diff == 2: 180°
+    else  -- diff == 2
         turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
         turtle.turnRight(); facing = (facing + 1) % 4; sleep(MOVE_DELAY)
     end
 end
 
 -- Calibrate facing by physically moving one block and reading GPS.
--- Called once at startup, after homePosition is known.
 local function calibrateFacing()
     local before = getPosition(true)
     if not before then return false end
-
     local moved = false
     for _ = 1, 4 do
         if turtle.forward() then moved = true; break end
@@ -220,7 +211,6 @@ local function calibrateFacing()
         log("WARNING: Cannot calibrate facing (all directions blocked?)")
         return false
     end
-
     sleep(0.5)
     local after = getPosition(true)
     if after then
@@ -230,16 +220,27 @@ local function calibrateFacing()
             log("Facing calibrated: " .. ({"North","East","South","West"})[facing+1])
         end
     end
-
-    -- Step back
     turtle.turnRight(); turtle.turnRight()
     turtle.forward()
     turtle.turnRight(); turtle.turnRight()
     return true
 end
 
--- flyTo: move the turtle to exactly {x,y,z}.
--- Returns true on successful GPS-verified arrival, false on failure.
+-- Save the full movement log to a local file.
+local function saveMovementLog(label, lines)
+    local filename = "movement_" .. tostring(label) .. "_" .. tostring(math.floor(os.epoch("utc") / 1000)) .. ".log"
+    local f = fs.open(filename, "w")
+    if f then
+        for _, line in ipairs(lines) do f.writeLine(line) end
+        f.close()
+        log("Movement log saved: " .. filename)
+    else
+        log("ERROR: Could not write movement log " .. filename)
+    end
+end
+
+-- flyTo: move the turtle to exactly {x, y, z}.
+-- Returns true on GPS-verified arrival, false on failure.
 local function flyTo(target)
     if turtle.getFuelLevel() == 0 then
         log("ERROR: Zero fuel, cannot fly!")
@@ -252,74 +253,75 @@ local function flyTo(target)
         return false
     end
 
-    log("flyTo " .. textutils.serialize(target))
+    -- Per-flyTo movement log — verbose, saved locally on failure
+    local mvlog = {}
+    local function ml(msg)
+        local entry = "[" .. pos.x .. "," .. pos.y .. "," .. pos.z .. "] " .. msg
+        table.insert(mvlog, entry)
+        log(msg)
+    end
 
-    local idleCount     = 0
+    ml("flyTo START target=" .. textutils.serialize(target) .. " facing=" .. facing)
+
     local stepsSinceGPS = 0
-    -- Per-axis stuck counters — never reset by progress on a different axis.
-    local stuckY   = 0
-    local stuckX   = 0
-    local stuckZ   = 0
-    local STUCK_UPLOAD = 3   -- upload log after this many consecutive failures on one axis
-    local lastDist = math.abs(target.x - pos.x)
-                   + math.abs(target.y - pos.y)
-                   + math.abs(target.z - pos.z)
+    local attempts      = 0   -- full retry counter (ascend + re-approach)
+    local MAX_ATTEMPTS  = 10
 
-    -- ── helpers used only inside the loop ──────────────────────
+    -- ── primitive movement helpers ───────────────────────────────
 
-    -- Try to step up one block; digs solid (non-turtle) obstacles.
-    local function stepUp()
+    local function doStepUp()
         sendKeepalive()
         if turtle.up() then
             pos = { x = pos.x, y = pos.y + 1, z = pos.z }
             stepsSinceGPS = stepsSinceGPS + 1
             sleep(MOVE_DELAY)
+            ml("  UP -> " .. pos.y)
             return true
         end
-        -- Something overhead — dig it and retry
         local ok, blk = turtle.inspectUp()
-        if ok then log("  dig up: " .. blk.name) end
-        turtle.digUp()
-        sleep(0.2)
+        ml("  UP blocked: " .. (ok and blk.name or "unknown"))
+        turtle.digUp(); sleep(0.2)
         if turtle.up() then
             pos = { x = pos.x, y = pos.y + 1, z = pos.z }
             stepsSinceGPS = stepsSinceGPS + 1
             sleep(MOVE_DELAY)
+            ml("  UP (after dig) -> " .. pos.y)
             return true
         end
         return false
     end
 
-    -- Try to step down one block; digs solid obstacles below.
-    local function stepDown()
+    local function doStepDown()
         sendKeepalive()
         if turtle.down() then
             pos = { x = pos.x, y = pos.y - 1, z = pos.z }
             stepsSinceGPS = stepsSinceGPS + 1
             sleep(MOVE_DELAY)
+            ml("  DOWN -> " .. pos.y)
             return true
         end
         local ok, blk = turtle.inspectDown()
-        if ok then log("  dig down: " .. blk.name) end
-        turtle.digDown()
-        sleep(0.2)
+        ml("  DOWN blocked: " .. (ok and blk.name or "unknown"))
+        turtle.digDown(); sleep(0.2)
         if turtle.down() then
             pos = { x = pos.x, y = pos.y - 1, z = pos.z }
             stepsSinceGPS = stepsSinceGPS + 1
             sleep(MOVE_DELAY)
+            ml("  DOWN (after dig) -> " .. pos.y)
             return true
         end
         return false
     end
 
-    -- Try to step forward one block (no digging — avoids hitting other turtles).
-    -- facing is already correct because turnToFace set it; no re-derivation needed.
-    local function stepForward(wantFacing)
+    -- Step forward in wantFacing direction. No digging (avoids other turtles).
+    -- Returns true on success, false if blocked.
+    local function doStepForward(wantFacing)
         sendKeepalive()
         turnToFace(wantFacing)
+        local fnames = {"N","E","S","W"}
         if not turtle.forward() then
             local ok, blk = turtle.inspect()
-            log("  forward blocked (facing=" .. wantFacing .. "): " .. (ok and blk.name or "air/unknown"))
+            ml("  FWD " .. fnames[wantFacing+1] .. " BLOCKED: " .. (ok and blk.name or "unknown"))
             return false
         end
         sleep(MOVE_DELAY)
@@ -327,130 +329,164 @@ local function flyTo(target)
         local dx = (wantFacing == 1) and 1 or (wantFacing == 3) and -1 or 0
         local dz = (wantFacing == 2) and 1 or (wantFacing == 0) and -1 or 0
         pos = { x = pos.x + dx, y = pos.y, z = pos.z + dz }
+        -- Periodic GPS re-sync to keep dead-reckoning honest
+        if stepsSinceGPS >= GPS_SYNC_INTERVAL then
+            local gps = getPosition(true)
+            if gps then
+                if gps.x ~= pos.x or gps.z ~= pos.z or gps.y ~= pos.y then
+                    ml("  GPS CORRECTION dead=" .. textutils.serialize(pos) .. " gps=" .. textutils.serialize(gps))
+                end
+                pos = gps
+            end
+            stepsSinceGPS = 0
+        end
+        ml("  FWD " .. fnames[wantFacing+1] .. " -> " .. pos.x .. "," .. pos.y .. "," .. pos.z)
         return true
     end
 
-    -- ── main navigation loop ────────────────────────────────────
-    while true do
+    -- Move along one axis (X or Z) toward target, with sidestep obstacle avoidance.
+    -- primaryFacing: direction we want to travel
+    -- sideFacingA/B: the two perpendicular directions to try as sidesteps
+    -- targetCoord / posCoord: which axis we're working on
+    -- Returns true if we made at least one step of progress, false if fully blocked.
+    local function driveAxis(primaryFacing, sideFacingA, sideFacingB, getCoord, targetCoord)
+        if getCoord(pos) == targetCoord then return true end  -- already correct
 
-        -- Periodic GPS re-sync (or on potential arrival)
-        if stepsSinceGPS >= GPS_SYNC_INTERVAL or
-           (pos.x == target.x and pos.y == target.y and pos.z == target.z) then
-            local gpsPos = getPosition(true)
-            if gpsPos then pos = gpsPos end
-            stepsSinceGPS = 0
+        ml("  driveAxis " .. ({"N","E","S","W"})[primaryFacing+1] ..
+           " from=" .. getCoord(pos) .. " to=" .. targetCoord)
+
+        -- Try primary direction first
+        if doStepForward(primaryFacing) then return true end
+
+        -- Blocked — try sidestep manoeuvres (up to 5 steps each side)
+        local sides = {sideFacingA, sideFacingB}
+        for _, sideFacing in ipairs(sides) do
+            ml("  sidestep attempt via " .. ({"N","E","S","W"})[sideFacing+1])
+            local sidesteps = 0
+            -- Sidestep up to 5 blocks
+            while sidesteps < 5 do
+                if not doStepForward(sideFacing) then break end
+                sidesteps = sidesteps + 1
+                -- After each sidestep, try the primary direction again
+                if doStepForward(primaryFacing) then
+                    ml("  primary unblocked after " .. sidesteps .. " sidestep(s)")
+                    return true
+                end
+            end
+            -- Sidestep didn't help — back up the sidesteps we took
+            local reverseFacing = (sideFacing + 2) % 4
+            for _ = 1, sidesteps do
+                doStepForward(reverseFacing)
+            end
+            ml("  backed up " .. sidesteps .. " sidestep(s)")
         end
+
+        ml("  driveAxis FAILED on " .. ({"N","E","S","W"})[primaryFacing+1])
+        return false
+    end
+
+    -- ── main flyTo loop ─────────────────────────────────────────
+    while attempts < MAX_ATTEMPTS do
+
+        -- Always GPS-verify at the top of each attempt
+        local gps = getPosition(true)
+        if gps then pos = gps; stepsSinceGPS = 0 end
+        ml("attempt #" .. attempts .. " pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target))
 
         -- Arrival check
         if pos.x == target.x and pos.y == target.y and pos.z == target.z then
-            -- Final GPS verification
-            local verified = getPosition(true)
-            if verified and verified.x == target.x and verified.y == target.y and verified.z == target.z then
+            ml("ARRIVED at " .. textutils.serialize(pos))
+            return true
+        end
+
+        local ok = true
+
+        -- Step 1: Ascend if target is above us
+        if ok and target.y > pos.y then
+            ml("ascending " .. (target.y - pos.y) .. " blocks")
+            while pos.y < target.y do
+                if not doStepUp() then
+                    ml("ERROR: Cannot ascend, bailing attempt")
+                    ok = false; break
+                end
+            end
+        end
+
+        -- Step 2: No-fly zone check before horizontal travel
+        if ok and serverPosition and SERVER_CLEAR_Y and pos.y < SERVER_CLEAR_Y then
+            local crossesServer = (pos.x == serverPosition.x or target.x == serverPosition.x) and
+                                  (pos.z == serverPosition.z or target.z == serverPosition.z)
+            if crossesServer then
+                ml("no-fly zone: ascending to Y=" .. SERVER_CLEAR_Y)
+                while pos.y < SERVER_CLEAR_Y do
+                    if not doStepUp() then
+                        ml("ERROR: Cannot clear no-fly zone")
+                        ok = false; break
+                    end
+                end
+            end
+        end
+
+        -- Step 3: Move X axis
+        if ok and pos.x ~= target.x then
+            local xFacing = pos.x < target.x and 1 or 3
+            while pos.x ~= target.x do
+                if not driveAxis(xFacing, 2, 0,
+                    function(p) return p.x end, target.x) then
+                    ml("X drive failed, ascending to try again")
+                    doStepUp()
+                    ok = false; break
+                end
+                local g = getPosition(true)
+                if g then pos = g; stepsSinceGPS = 0 end
+            end
+        end
+
+        -- Step 4: Move Z axis
+        if ok and pos.z ~= target.z then
+            local zFacing = pos.z < target.z and 2 or 0
+            while pos.z ~= target.z do
+                if not driveAxis(zFacing, 1, 3,
+                    function(p) return p.z end, target.z) then
+                    ml("Z drive failed, ascending to try again")
+                    doStepUp()
+                    ok = false; break
+                end
+                local g = getPosition(true)
+                if g then pos = g; stepsSinceGPS = 0 end
+            end
+        end
+
+        -- Step 5: Descend if target is below us (only after X and Z are correct)
+        if ok and target.y < pos.y then
+            ml("descending " .. (pos.y - target.y) .. " blocks")
+            while pos.y > target.y do
+                if not doStepDown() then
+                    ml("ERROR: Cannot descend, bailing attempt")
+                    ok = false; break
+                end
+            end
+        end
+
+        -- Final GPS verify
+        if ok then
+            local final = getPosition(true)
+            if final then pos = final end
+            if pos.x == target.x and pos.y == target.y and pos.z == target.z then
+                ml("ARRIVED (verified) at " .. textutils.serialize(pos))
                 return true
-            elseif verified then
-                pos = verified  -- not quite there — continue loop
+            else
+                ml("Post-move GPS mismatch: pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target))
             end
         end
 
-        -- Progress check (bail if stuck)
-        local dist = math.abs(target.x - pos.x)
-                   + math.abs(target.y - pos.y)
-                   + math.abs(target.z - pos.z)
-        if dist < lastDist then
-            idleCount = 0; lastDist = dist
-        else
-            idleCount = idleCount + 1
-            if idleCount >= MAX_IDLE then
-                log("ERROR: flyTo stuck! target=" .. textutils.serialize(target) .. " pos=" .. textutils.serialize(pos))
-                uploadLog("stuck")
-                return false
-            end
-        end
-
-        -- ── Axis decision ──────────────────────────────────────
-        -- Priority: ascend → X (with no-fly guard) → Z (with no-fly guard) → descend
-
-        if pos.y < target.y then
-            if not stepUp() then
-                stuckY = stuckY + 1
-                if stuckY >= 5 then
-                    log("ERROR: Cannot ascend to target Y!")
-                    uploadLog("stuck_up")
-                    return false
-                end
-            else
-                stuckY = 0
-            end
-
-        elseif pos.x ~= target.x then
-            local nextX = pos.x + (pos.x < target.x and 1 or -1)
-            if serverPosition and SERVER_CLEAR_Y
-               and nextX == serverPosition.x and pos.z == serverPosition.z
-               and pos.y < SERVER_CLEAR_Y then
-                log("No-fly ahead on X, ascending to Y=" .. SERVER_CLEAR_Y)
-                if not stepUp() then
-                    stuckY = stuckY + 1
-                    if stuckY >= 5 then log("ERROR: Stuck ascending for no-fly X!") return false end
-                else stuckY = 0 end
-            else
-                local wantFacing = pos.x < target.x and 1 or 3
-                if stepForward(wantFacing) then
-                    stuckX = 0
-                else
-                    stuckX = stuckX + 1
-                    log("X stuck x" .. stuckX .. " (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target) .. ")")
-                    if stuckX >= STUCK_UPLOAD then
-                        uploadLog("stuck_X")
-                    end
-                    if stuckX >= 5 then
-                        log("ERROR: Stuck on X axis!")
-                        return false
-                    end
-                end
-            end
-
-        elseif pos.z ~= target.z then
-            local nextZ = pos.z + (pos.z < target.z and 1 or -1)
-            if serverPosition and SERVER_CLEAR_Y
-               and pos.x == serverPosition.x and nextZ == serverPosition.z
-               and pos.y < SERVER_CLEAR_Y then
-                log("No-fly ahead on Z, ascending to Y=" .. SERVER_CLEAR_Y)
-                if not stepUp() then
-                    stuckY = stuckY + 1
-                    if stuckY >= 5 then log("ERROR: Stuck ascending for no-fly Z!") return false end
-                else stuckY = 0 end
-            else
-                local wantFacing = pos.z < target.z and 2 or 0
-                if stepForward(wantFacing) then
-                    stuckZ = 0
-                else
-                    stuckZ = stuckZ + 1
-                    log("Z stuck x" .. stuckZ .. " (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target) .. ")")
-                    if stuckZ >= STUCK_UPLOAD then
-                        uploadLog("stuck_Z")
-                    end
-                    if stuckZ >= 5 then
-                        log("ERROR: Stuck on Z axis!")
-                        return false
-                    end
-                end
-            end
-
-        elseif pos.y > target.y then
-            if not stepDown() then
-                stuckY = stuckY + 1
-                if stuckY >= 5 then
-                    log("ERROR: Cannot descend to target Y!")
-                    uploadLog("stuck_down")
-                    return false
-                end
-            else
-                stuckY = 0
-            end
-        end
-
-        sendKeepalive()
+        attempts = attempts + 1
     end
+
+    -- All attempts exhausted — save local log and fail
+    ml("FAILED after " .. MAX_ATTEMPTS .. " attempts")
+    saveMovementLog("flyTo_fail", mvlog)
+    return false
 end
 
 -- ============================================================
@@ -577,7 +613,7 @@ local function returnHome()
     if not flyTo(homePosition) then
         local cur = getPosition(true)
         log("ERROR: Cannot reach home! cur=" .. textutils.serialize(cur))
-        uploadLog("home_fail")
+        saveLog("home_fail")
         return false
     end
 
