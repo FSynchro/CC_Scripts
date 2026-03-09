@@ -114,33 +114,10 @@ end
 local function drawStatusTab()
     local y = 3
     
-    if errorMode then
-        drawText(1, y, "ERROR MODE", COLOR_BG, COLOR_ERROR)
+    if errorMode and errorMessage ~= "" then
+        -- Non-blocking inline warning — doesn't lock the whole screen
+        drawText(1, y, ("! " .. errorMessage):sub(1, width), COLOR_ERROR, COLOR_TEXT)
         y = y + 1
-        
-        local words = {}
-        for word in errorMessage:gmatch("%S+") do
-            table.insert(words, word)
-        end
-        
-        local line = ""
-        for _, word in ipairs(words) do
-            if #line + #word + 1 <= width then
-                line = line .. (line == "" and "" or " ") .. word
-            else
-                drawText(1, y, line, COLOR_BG, COLOR_ERROR)
-                y = y + 1
-                line = word
-            end
-        end
-        if line ~= "" then
-            drawText(1, y, line, COLOR_BG, COLOR_ERROR)
-            y = y + 1
-        end
-        
-        y = y + 1
-        drawButton(1, y, width, "RESET ERROR", COLOR_ERROR, COLOR_TEXT)
-        return
     end
     
     if not setupComplete then
@@ -180,13 +157,23 @@ local function drawStatusTab()
         drawText(1, y, "Turtle Status:", COLOR_BG, COLOR_HEADER)
         y = y + 1
         
-        for _, turtle in ipairs(turtles) do
-            local status = "T#" .. turtle.id .. ": " .. turtle.status
-            if turtle.statusDetail and turtle.statusDetail ~= "" then
-                status = status .. " (" .. turtle.statusDetail .. ")"
+        for _, t in ipairs(turtles) do
+            local status = "T#" .. t.id .. ": " .. t.status
+            if t.statusDetail and t.statusDetail ~= "" then
+                status = status .. " (" .. t.statusDetail .. ")"
+            end
+            if t.offline then
+                status = status .. " [OFFLINE]"
             end
             
-            local statusColor = turtle.status == "idle" and colors.gray or COLOR_SUCCESS
+            local statusColor
+            if t.offline then
+                statusColor = COLOR_ERROR
+            elseif t.status == "idle" then
+                statusColor = colors.gray
+            else
+                statusColor = COLOR_SUCCESS
+            end
             drawText(1, y, status:sub(1, width), COLOR_BG, statusColor)
             y = y + 1
             
@@ -350,12 +337,10 @@ local function drawRecipesTab()
     end
 end
 
--- Shared button layout state — populated by drawAltarsTab, read by handleTouch
+-- Shared layout state written by draw, read by touch handler
 local altarsLayout = {
-    listWidth = 0,
-    gridX = 0,
-    confirmButtonY = nil,
-    rescanButtonY = nil,
+    listWidth = 0, gridX = 0,
+    confirmButtonY = nil, rescanButtonY = nil, restartButtonY = nil,
 }
 
 -- UPDATED: Draw altars tab with confirmation buttons
@@ -372,6 +357,7 @@ local function drawAltarsTab()
     altarsLayout.gridX = listWidth + 3
     altarsLayout.confirmButtonY = nil
     altarsLayout.rescanButtonY = nil
+    altarsLayout.restartButtonY = nil
     
     drawText(1, y, "Altars:", COLOR_BG, COLOR_HEADER)
     y = y + 1
@@ -501,20 +487,23 @@ local function drawAltarsTab()
             drawText(gridX, statsY, "Stabilizers: " .. #(selectedAltar.stabilizers or {}), COLOR_BG, COLOR_TEXT)
             statsY = statsY + 2
             
-            -- NEW: Action buttons
+            -- Action buttons — record Y positions for touch handler
             if selectedAltar.pedestalsScanned and not selectedAltar.layoutConfirmed then
-                -- Show CONFIRM then RESCAN
                 altarsLayout.confirmButtonY = statsY
                 drawButton(gridX, statsY, 15, "CONFIRM LAYOUT", COLOR_SUCCESS, COLOR_TEXT)
                 statsY = statsY + 1
                 altarsLayout.rescanButtonY = statsY
                 drawButton(gridX, statsY, 15, "RESCAN", COLOR_WARNING, COLOR_TEXT)
             elseif selectedAltar.layoutConfirmed then
-                -- Show RESCAN only
                 altarsLayout.rescanButtonY = statsY
                 drawButton(gridX, statsY, 15, "RESCAN", COLOR_BUTTON, COLOR_TEXT)
+                statsY = statsY + 1
+                -- Restart infusion only when altar is busy (infusion in progress)
+                if selectedAltar.busy then
+                    altarsLayout.restartButtonY = statsY
+                    drawButton(gridX, statsY, 15, "RESTART INFUSION", colors.orange, COLOR_TEXT)
+                end
             else
-                -- Not scanned yet
                 drawText(gridX, statsY, "Waiting for scan...", COLOR_BG, colors.gray)
             end
         end
@@ -588,7 +577,7 @@ local function handleTouch(x, y)
         local listWidth = altarsLayout.listWidth > 0 and altarsLayout.listWidth or math.floor(width / 3)
         local gridX = altarsLayout.gridX > 0 and altarsLayout.gridX or (listWidth + 3)
 
-        -- Altar list selection (left column, rows 4+)
+        -- Altar list selection (left column)
         if x <= listWidth and y >= 4 then
             local altarIdx = y - 3
             if altarIdx >= 1 and altarIdx <= #altars then
@@ -598,14 +587,11 @@ local function handleTouch(x, y)
             return
         end
 
-        -- Button area (right side) — positions come directly from draw code
+        -- Button area (right side) — Y positions come directly from draw code
         if selectedAltarId and x >= gridX then
             local selectedAltar = nil
             for _, altar in ipairs(altars) do
-                if altar.id == selectedAltarId then
-                    selectedAltar = altar
-                    break
-                end
+                if altar.id == selectedAltarId then selectedAltar = altar break end
             end
 
             if selectedAltar then
@@ -626,10 +612,18 @@ local function handleTouch(x, y)
                     showStatus("Requesting rescan of altar #" .. selectedAltarId .. "...")
                     modem.transmit(CHANNEL, CHANNEL, { type = "request_status", data = {} })
                     draw()
+
+                elseif altarsLayout.restartButtonY and y == altarsLayout.restartButtonY then
+                    modem.transmit(CHANNEL, CHANNEL, {
+                        type = "restart_infusion",
+                        data = { altarId = selectedAltarId }
+                    })
+                    showStatus("Restarting infusion on altar #" .. selectedAltarId .. "...")
+                    modem.transmit(CHANNEL, CHANNEL, { type = "request_status", data = {} })
+                    draw()
                 end
             end
         end
-
         return
     end
     
@@ -775,13 +769,18 @@ local function handleMessage(msg)
         draw()
         
     elseif msg.type == "error_mode" then
-        errorMode = true
-        errorMessage = msg.data.message
+        -- Don't lock the whole UI, just show the message in status
+        showStatus("WARNING: " .. (msg.data.message or "unknown error"))
         draw()
         
     elseif msg.type == "error_cleared" then
         errorMode = false
         errorMessage = ""
+        draw()
+    
+    elseif msg.type == "infusion_restarting" then
+        showStatus("Restarting infusion on altar #" .. tostring(msg.data.altarId) .. "...")
+        modem.transmit(CHANNEL, CHANNEL, { type = "request_status", data = {} })
         draw()
     
     elseif msg.type == "setup_complete" then
@@ -830,7 +829,8 @@ local function handleMessage(msg)
         draw()
         
     elseif msg.type == "recipe_added" or msg.type == "infusion_started" or 
-           msg.type == "infusion_complete" or msg.type == "altar_registered" then
+           msg.type == "infusion_complete" or msg.type == "altar_registered" or
+           msg.type == "altar_layout" then
         modem.transmit(CHANNEL, CHANNEL, {
             type = "request_status",
             data = {}
