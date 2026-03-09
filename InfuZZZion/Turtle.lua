@@ -548,14 +548,26 @@ local STABILIZER_PATTERNS = {"skull", "head", "candle"}
 local ME_INTERFACE_PATTERNS = {"me_interface", "interface", "appeng", "ae2"}
 
 local function inspectBelow(targetPos)
+    -- Travel at y+2 so the turtle clears pedestals and altar structures
+    -- when moving between scan positions. Then step down to y+1 to inspect.
+    local transitPos = {
+        x = targetPos.x,
+        y = targetPos.y + 2,
+        z = targetPos.z
+    }
     local abovePos = {
         x = targetPos.x,
         y = targetPos.y + 1,
         z = targetPos.z
     }
 
+    if not moveTo(transitPos) then
+        print("  inspectBelow: could not reach transit above " .. textutils.serialize(targetPos))
+        return false, nil
+    end
+
     if not moveTo(abovePos) then
-        print("  inspectBelow: could not reach above " .. textutils.serialize(targetPos))
+        print("  inspectBelow: could not descend to inspect above " .. textutils.serialize(targetPos))
         return false, nil
     end
 
@@ -567,7 +579,8 @@ local function inspectBelow(targetPos)
     end
 
     print("  inspectBelow " .. textutils.serialize(targetPos) .. " => (nothing)")
-    return false, nil
+    -- Return true with nil block — position was reached, just nothing there
+    return true, nil
 end
 
 -- ============================================================
@@ -594,70 +607,68 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
     local foundPedestals = {}
     local foundStabilizers = {}
 
-    local totalFailed = 0
-    local MAX_TOTAL_FAILURES = 10
-    local aborted = false
+    -- Before entering the scan grid, ascend to catalystPos.y+2 if we are
+    -- already within the altar's footprint (within 5 blocks on X or Z).
+    -- This ensures we clear the pedestals before moving horizontally.
+    local startPos = getPosition(true)
+    if startPos then
+        local dxStart = math.abs(startPos.x - catalystPos.x)
+        local dzStart = math.abs(startPos.z - catalystPos.z)
+        if dxStart <= 5 or dzStart <= 5 then
+            print("Within altar range, ascending to clear pedestals...")
+            moveTo({ x = startPos.x, y = catalystPos.y + 2, z = startPos.z })
+        end
+    end
 
     for rowIdx, zOffset in ipairs(assignedRows) do
-        if aborted then break end
-
         print("Row " .. rowIdx .. "/" .. #assignedRows .. " (Z=" .. zOffset .. ")...")
 
         for xOffset = -3, 3 do
-            if not aborted then
-                if not (xOffset == 0 and zOffset == 0) then
+            if not (xOffset == 0 and zOffset == 0) then
 
-                    if turtle.getFuelLevel() < REFUEL_THRESHOLD then
-                        print("Fuel low during scan (" .. turtle.getFuelLevel() .. "), refuelling...")
-                        if not doRefuel() then
-                            print("WARNING: Could not refuel during scan, continuing")
-                        end
+                if turtle.getFuelLevel() < REFUEL_THRESHOLD then
+                    print("Fuel low during scan (" .. turtle.getFuelLevel() .. "), refuelling...")
+                    if not doRefuel() then
+                        print("WARNING: Could not refuel during scan, continuing")
                     end
-
-                    -- The block we want to inspect sits at catalystPos.y
-                    local targetPos = {
-                        x = catalystPos.x + xOffset,
-                        y = catalystPos.y,
-                        z = catalystPos.z + zOffset
-                    }
-
-                    -- inspectBelow handles the Y+1 positioning itself
-                    local found, block = inspectBelow(targetPos)
-
-                    if found then
-                        local posKey = targetPos.x .. "," .. targetPos.y .. "," .. targetPos.z
-
-                        if blockMatches(block.name, PEDESTAL_PATTERNS) then
-                            if not foundPedestals[posKey] then
-                                foundPedestals[posKey] = true
-                                table.insert(pedestals, targetPos)
-                                print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
-                            end
-                        elseif blockMatches(block.name, STABILIZER_PATTERNS) then
-                            if not foundStabilizers[posKey] then
-                                foundStabilizers[posKey] = true
-                                table.insert(stabilizers, targetPos)
-                                print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
-                            end
-                        end
-                    else
-                        -- inspectBelow returning false means moveTo failed
-                        totalFailed = totalFailed + 1
-                        print("  Skipped [" .. xOffset .. "," .. zOffset .. "] (" .. totalFailed .. "/" .. MAX_TOTAL_FAILURES .. ")")
-                        if totalFailed >= MAX_TOTAL_FAILURES then
-                            print("TOO MANY FAILURES - Aborting scan")
-                            aborted = true
-                        end
-                    end
-
-                    sendKeepalive()
                 end
+
+                -- The block we want to inspect sits at catalystPos.y
+                local targetPos = {
+                    x = catalystPos.x + xOffset,
+                    y = catalystPos.y,
+                    z = catalystPos.z + zOffset
+                }
+
+                -- inspectBelow returns (reached, block). reached=false means
+                -- moveTo genuinely failed; we warn and continue — never skip.
+                local reached, block = inspectBelow(targetPos)
+
+                if not reached then
+                    print("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
+                elseif block then
+                    local posKey = targetPos.x .. "," .. targetPos.y .. "," .. targetPos.z
+
+                    if blockMatches(block.name, PEDESTAL_PATTERNS) then
+                        if not foundPedestals[posKey] then
+                            foundPedestals[posKey] = true
+                            table.insert(pedestals, targetPos)
+                            print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
+                        end
+                    elseif blockMatches(block.name, STABILIZER_PATTERNS) then
+                        if not foundStabilizers[posKey] then
+                            foundStabilizers[posKey] = true
+                            table.insert(stabilizers, targetPos)
+                            print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
+                        end
+                    end
+                end
+
+                sendKeepalive()
             end
         end
 
-        if not aborted then
-            print("End of row " .. rowIdx .. " | Pedestals: " .. #pedestals .. " Stabilizers: " .. #stabilizers)
-        end
+        print("End of row " .. rowIdx .. " | Pedestals: " .. #pedestals .. " Stabilizers: " .. #stabilizers)
     end
 
     print("=================================")
