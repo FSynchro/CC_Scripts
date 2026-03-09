@@ -3,6 +3,7 @@
 
 local CHANNEL = 1742
 local ID_FILE = "turtle_id.dat"
+local PASTEBIN_KEY = "YOUR_PASTEBIN_API_KEY"  -- get free key at pastebin.com/doc/api
 local SCAN_DELAY = 0.5
 local MOVE_DELAY = 0.3
 local GPS_VERIFY_RETRIES = 3
@@ -16,6 +17,39 @@ local FUEL_ITEMS = {
     ["minecraft:charcoal"] = true,
     ["minecraft:coal_block"] = true,
 }
+
+-- Logging
+local logBuffer = {}
+local function log(msg)
+    local line = "[" .. os.date and os.date("!%H:%M:%S") or tostring(os.epoch("utc")/1000) .. "] " .. tostring(msg)
+    table.insert(logBuffer, line)
+    print(msg)
+    if #logBuffer > 300 then table.remove(logBuffer, 1) end  -- keep last 300 lines
+end
+
+local function uploadLog(label)
+    if not http then
+        print("HTTP not available, cannot upload log")
+        return nil
+    end
+    local body = "=== Turtle Log: " .. tostring(label) .. " ===\n" .. table.concat(logBuffer, "\n")
+    local ok, err = pcall(function()
+        local resp = http.post("https://pastebin.com/api/api_post.php",
+            "api_dev_key=" .. PASTEBIN_KEY ..
+            "&api_option=paste" ..
+            "&api_paste_code=" .. textutils.urlEncode(body) ..
+            "&api_paste_name=" .. textutils.urlEncode("Turtle#" .. tostring(assignedId) .. "_" .. tostring(label)) ..
+            "&api_paste_expire_date=1H"
+        )
+        if resp then
+            local url = resp.readAll()
+            resp.close()
+            print("Log uploaded: " .. tostring(url))
+            return url
+        end
+    end)
+    if not ok then print("Upload failed: " .. tostring(err)) end
+end
 
 -- State
 local modem = peripheral.find("modem")
@@ -276,7 +310,7 @@ local function calibrateFacing()
         local derived = facingFromMove(before, after)
         if derived then
             facing = derived
-            print("Facing calibrated: " .. ({"North","East","South","West"})[facing+1])
+            log("Facing calibrated: " .. ({"North","East","South","West"})[facing+1])
         end
     end
 
@@ -301,7 +335,7 @@ local function moveTo(target)
         return false
     end
 
-    print("Moving to " .. textutils.serialize(target))
+    log("Moving to " .. textutils.serialize(target))
 
     -- Instead of a fixed step budget calculated once at the start (which fails
     -- if the turtle overshoots and has to backtrack), we track how many
@@ -348,9 +382,9 @@ local function moveTo(target)
         else
             idleCount = idleCount + 1
             if idleCount >= MAX_IDLE then
-                print("ERROR: moveTo exceeded max steps!")
-                print("  Target: " .. textutils.serialize(target))
-                print("  Actual: " .. textutils.serialize(pos))
+                log("ERROR: moveTo exceeded max steps!")
+                log("  Target: " .. textutils.serialize(target))
+                log("  Actual: " .. textutils.serialize(pos))
                 return false
             end
         end
@@ -361,7 +395,7 @@ local function moveTo(target)
             -- Need to go up — do this before any horizontal movement
             if not moveUp() then
                 stuckCount = stuckCount + 1
-                if stuckCount >= 5 then print("ERROR: Stuck going up!") return false end
+                if stuckCount >= 5 then log("ERROR: Stuck going up!") uploadLog("stuck_up") return false end
             else
                 stuckCount = 0
                 stepsSinceGPS = stepsSinceGPS + 1
@@ -412,7 +446,9 @@ local function moveTo(target)
                     pos = newPos
                 else
                     stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
+                    local ok, blk = turtle.inspect()
+                    log("  X blocked (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. "): " .. (ok and blk.name or "air/unknown"))
+                    if stuckCount >= 5 then log("ERROR: Stuck on X axis!") uploadLog("stuck_X") return false end
                 end
             end
 
@@ -444,7 +480,9 @@ local function moveTo(target)
                     pos = newPos
                 else
                     stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
+                    local ok, blk = turtle.inspect()
+                    log("  Z blocked (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. "): " .. (ok and blk.name or "air/unknown"))
+                    if stuckCount >= 5 then log("ERROR: Stuck on Z axis!") uploadLog("stuck_Z") return false end
                 end
             end
 
@@ -452,7 +490,7 @@ local function moveTo(target)
             -- Descend last, once X and Z are already correct
             if not moveDown() then
                 stuckCount = stuckCount + 1
-                if stuckCount >= 5 then print("ERROR: Stuck going down!") return false end
+                if stuckCount >= 5 then log("ERROR: Stuck going down!") uploadLog("stuck_down") return false end
             else
                 stuckCount = 0
                 stepsSinceGPS = stepsSinceGPS + 1
@@ -604,7 +642,7 @@ end
 local function returnHome()
     if not homePosition then return false end
 
-    print("Returning home...")
+    log("Returning home...")
     updateStatus("returning", "going to home position")
 
     local current = getPosition(true)
@@ -627,16 +665,18 @@ local function returnHome()
     -- Move X/Z at safe height, then descend to home Y
     local intermediatePos = { x = homePosition.x, y = safeY, z = homePosition.z }
     if not moveTo(intermediatePos) then
-        print("ERROR: Cannot reach home X,Z!")
+        local cur = getPosition(true)
+        log("ERROR: Cannot reach home X,Z! cur=" .. textutils.serialize(cur) .. " target=" .. textutils.serialize(intermediatePos))
+        uploadLog("home_fail")
         return false
     end
 
     if not moveTo(homePosition) then
-        print("ERROR: Cannot reach home Y!")
+        log("ERROR: Cannot reach home Y!") uploadLog("home_y_fail")
         return false
     end
 
-    print("Home!")
+    log("Home!")
     saveId()
 
     -- Check for any stray non-fuel items and return them to the chest
