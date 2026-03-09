@@ -1157,7 +1157,7 @@ local function main()
         modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_register",
             data = {
-                computerID = computerID,
+                computerId = computerID,
                 position = homePosition
             }
         })
