@@ -28,6 +28,8 @@ local computerID = os.getComputerID()
 local assignedId = nil
 local chestPosition = nil
 local meInterfacePosition = nil
+local serverPosition = nil   -- Received from server; used as a no-fly zone
+local SERVER_CLEAR_Y = nil   -- Must be >= this Y to pass over the server column
 local facing = 0
 
 if not modem then
@@ -270,42 +272,59 @@ local function moveTo(target)
             end
 
         elseif pos.x ~= target.x then
-            -- Need to move on X axis
-            local wantFacing = pos.x < target.x and 1 or 3
-            turnToFace(wantFacing)
-
-            if moveForward() then
-                stuckCount = 0
-                -- Trust the intended direction; update facing and dead-reckon pos.
-                -- GPS will correct on next loop iteration if we drifted.
-                facing = wantFacing
-                pos = {
-                    x = pos.x + (wantFacing == 1 and 1 or -1),
-                    y = pos.y,
-                    z = pos.z
-                }
+            -- Before moving on X, check if the next X position is the server's X
+            -- column while we're at an unsafe Y — if so, ascend first.
+            local nextX = pos.x + (pos.x < target.x and 1 or -1)
+            if serverPosition and SERVER_CLEAR_Y and
+               nextX == serverPosition.x and pos.z == serverPosition.z and
+               pos.y < SERVER_CLEAR_Y then
+                print("No-fly zone ahead on X, ascending to Y=" .. SERVER_CLEAR_Y)
+                if not moveUp() then
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck ascending for no-fly X!") return false end
+                else
+                    stuckCount = 0
+                    pos = { x = pos.x, y = pos.y + 1, z = pos.z }
+                end
             else
-                stuckCount = stuckCount + 1
-                if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
+                local wantFacing = pos.x < target.x and 1 or 3
+                turnToFace(wantFacing)
+                if moveForward() then
+                    stuckCount = 0
+                    facing = wantFacing
+                    pos = { x = pos.x + (wantFacing == 1 and 1 or -1), y = pos.y, z = pos.z }
+                else
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
+                end
             end
 
         elseif pos.z ~= target.z then
-            -- Need to move on Z axis
-            local wantFacing = pos.z < target.z and 2 or 0
-            turnToFace(wantFacing)
-
-            if moveForward() then
-                stuckCount = 0
-                -- Trust the intended direction; update facing and dead-reckon pos.
-                facing = wantFacing
-                pos = {
-                    x = pos.x,
-                    y = pos.y,
-                    z = pos.z + (wantFacing == 2 and 1 or -1)
-                }
+            -- Before moving on Z, check if the next Z position crosses the server's
+            -- Z column while we're at the server's X and an unsafe Y.
+            local nextZ = pos.z + (pos.z < target.z and 1 or -1)
+            if serverPosition and SERVER_CLEAR_Y and
+               pos.x == serverPosition.x and nextZ == serverPosition.z and
+               pos.y < SERVER_CLEAR_Y then
+                print("No-fly zone ahead on Z, ascending to Y=" .. SERVER_CLEAR_Y)
+                if not moveUp() then
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck ascending for no-fly Z!") return false end
+                else
+                    stuckCount = 0
+                    pos = { x = pos.x, y = pos.y + 1, z = pos.z }
+                end
             else
-                stuckCount = stuckCount + 1
-                if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
+                local wantFacing = pos.z < target.z and 2 or 0
+                turnToFace(wantFacing)
+                if moveForward() then
+                    stuckCount = 0
+                    facing = wantFacing
+                    pos = { x = pos.x, y = pos.y, z = pos.z + (wantFacing == 2 and 1 or -1) }
+                else
+                    stuckCount = stuckCount + 1
+                    if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
+                end
             end
 
         elseif pos.y > target.y then
@@ -1063,11 +1082,24 @@ local function handleMessage(msg)
             print("Fuel:   " .. turtle.getFuelLevel())
             print("=================================")
 
+            -- Store server position as a no-fly zone regardless of which path we take
+            if msg.data.serverPosition then
+                serverPosition = msg.data.serverPosition
+                SERVER_CLEAR_Y = serverPosition.y + 2  -- Must be >= this to pass over
+                print("Server no-fly zone set at " .. textutils.serialize(serverPosition))
+            end
+
             -- If server already knows chest position (e.g. from a previous turtle
             -- that reported it), it sends it along so we skip the scan.
             if msg.data.chestPosition then
                 chestPosition = msg.data.chestPosition
                 meInterfacePosition = msg.data.meInterfacePosition
+                -- Infer server position from chest if not provided directly
+                if not serverPosition and chestPosition then
+                    -- We don't know exact server pos, but set a safe clear Y
+                    -- based on chest Y so we still avoid flying through things
+                    SERVER_CLEAR_Y = chestPosition.y + 2
+                end
                 print("Chest pos from server: " .. textutils.serialize(chestPosition))
                 print("ME pos from server:    " .. textutils.serialize(meInterfacePosition))
             elseif msg.data.serverPosition then
