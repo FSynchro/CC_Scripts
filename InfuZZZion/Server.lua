@@ -555,6 +555,7 @@ local function startInfusion(recipeId, recipe, altarIdx)
             type = "place_catalyst",
             item = recipe.catalyst,
             position = altar.catalyst,
+            altarCatalyst = altar.catalyst,
             chestPosition = chestPosition
         })
         updateTurtleStatus(turtles[1].id, "working", "placing catalyst")
@@ -573,6 +574,7 @@ local function startInfusion(recipeId, recipe, altarIdx)
                 type = "place_ingredient",
                 item = ingredient,
                 position = altar.pedestals[i],
+                altarCatalyst = altar.catalyst,
                 chestPosition = chestPosition
             })
             updateTurtleStatus(t.id, "working", "placing ingredients")
@@ -628,6 +630,7 @@ local function completeInfusion(altarId, resultItem)
             table.insert(turtles[1].tasks, {
                 type = "clear_pedestal",
                 position = pedestalPos,
+                altarCatalyst = altar.catalyst,
                 meInterfacePosition = meInterfacePosition
             })
         end
