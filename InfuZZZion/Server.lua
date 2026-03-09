@@ -383,7 +383,18 @@ end
 local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerPositions, turtleId)
     for _, altar in ipairs(altars) do
         if altar.id == altarId then
-            altar.pedestals = pedestalPositions or {}
+            -- Filter out any pedestal whose XZ matches the catalyst computer —
+            -- that's the centre altar pedestal which is reserved for the catalyst item
+            -- and must never be in the ingredients list.
+            local filtered = {}
+            for _, p in ipairs(pedestalPositions or {}) do
+                if not (p.x == altar.catalyst.x and p.z == altar.catalyst.z) then
+                    table.insert(filtered, p)
+                else
+                    print("  Filtered out centre pedestal at " .. textutils.serialize(p))
+                end
+            end
+            altar.pedestals   = filtered
             altar.stabilizers = stabilizerPositions or {}
 
             print("Altar #" .. altarId .. " scan results:")
@@ -569,103 +580,177 @@ end
 -- INFUSION
 -- ============================================================
 
-local function startInfusion(recipeId, recipe, altarIdx)
-    print("Starting infusion for recipe #" .. recipeId .. " on altar #" .. altarIdx)
+-- ============================================================
+-- INFUSION SLOT TRACKING
+--
+-- activeInfusion[altarId] = {
+--   recipeId, altarId, startTime, status,
+--   slots = {
+--     { type="catalyst"|"ingredient", item, position, status="pending"|"dispatched"|"placed", turtleId=nil }
+--   },
+--   nextPending = 1   -- index of next slot not yet dispatched
+-- }
+--
+-- Flow:
+--   startInfusion     → builds slots, dispatches one task per available turtle
+--   item_placed       → marks slot placed, dispatches next pending slot to that turtle
+--   infusion_complete → altar computer confirms catalyst appeared; start clearing
+--   clear_placed      → marks pedestal cleared, dispatches next pending clear
+-- ============================================================
 
-    local altar = altars[altarIdx]
-
-    if not altar.layoutConfirmed then
-        print("ERROR: Altar #" .. altarIdx .. " layout not confirmed!")
-        return
-    end
-
-    if not altar.pedestalsScanned or #altar.pedestals == 0 then
-        print("ERROR: Altar #" .. altarIdx .. " pedestals not scanned!")
-        return
-    end
-
-    altar.busy = true
-    altar.currentRecipe = recipeId
-
-    local infusion = {
-        recipeId = recipeId,
-        altarId = altar.id,
-        startTime = os.epoch("utc"),
-        status = "placing_items"
-    }
-
-    activeInfusions[altar.id] = infusion
-
-    -- Clear any leftover tasks from previous runs
+-- Find the next idle turtle, or nil if all busy.
+local function findIdleTurtle()
     for _, t in ipairs(turtles) do
-        t.tasks = {}
+        if t.status == "idle" and not t.offline then return t end
     end
+    return nil
+end
 
-    -- Turtle 1 gets the catalyst. Ingredients are distributed round-robin
-    -- across ALL turtles starting from turtle 1, so every turtle gets work.
-    -- Each turtle gets a flat list of tasks; it processes them sequentially,
-    -- going home between each one.
-    local turtleIdx = 1
-
-    -- Catalyst first, on turtle 1.
-    -- altar.catalyst is the computer position (y=68); the catalyst pedestal
-    -- sits one block above it (y=69), so we pass y+1 as the drop target.
-    if turtles[1] then
-        table.insert(turtles[1].tasks, {
-            type = "place_catalyst",
-            item = recipe.catalyst,
-            position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
-            altarCatalyst = altar.catalyst,
-            chestPosition = chestPosition
-        })
-    end
-
-    -- Ingredients distributed round-robin across all turtles
-    for i, ingredient in ipairs(recipe.ingredients) do
-        if i > #altar.pedestals then
-            print("WARNING: More ingredients (" .. #recipe.ingredients .. ") than pedestals (" .. #altar.pedestals .. ")!")
-            break
-        end
-
-        local t = turtles[turtleIdx]
-        if t then
-            table.insert(t.tasks, {
-                type = "place_ingredient",
-                item = ingredient,
-                position = altar.pedestals[i],
-                altarCatalyst = altar.catalyst,
-                chestPosition = chestPosition
-            })
-        end
-
-        turtleIdx = turtleIdx + 1
-        if turtleIdx > #turtles then turtleIdx = 1 end
-    end
-
-    -- Dispatch each turtle that has tasks, staggered 10 ticks (0.5s) apart
-    -- so they don't all rush to the chest simultaneously.
-    local dispatchDelay = 0
+-- Find a turtle by id.
+local function findTurtle(id)
     for _, t in ipairs(turtles) do
-        if #t.tasks > 0 then
-            print("Dispatching " .. #t.tasks .. " task(s) to turtle #" .. t.id ..
-                  " (delay=" .. dispatchDelay .. " ticks)")
+        if t.id == id then return t end
+    end
+    return nil
+end
+
+-- Dispatch one placement task to a turtle from the infusion slot list.
+-- Finds the next pending slot and sends it to the given turtle.
+-- Returns true if a task was dispatched.
+local function dispatchNextSlot(infusion, turtle, delayTicks)
+    for i, slot in ipairs(infusion.slots) do
+        if slot.status == "pending" then
+            slot.status    = "dispatched"
+            slot.turtleId  = turtle.id
+
+            local taskType = slot.type == "catalyst" and "place_catalyst" or "place_ingredient"
+            print("Dispatching slot #" .. i .. " (" .. taskType .. " " .. slot.item.item.name ..
+                  ") to turtle #" .. turtle.id)
+
             modem.transmit(CHANNEL, CHANNEL, {
                 type = "turtle_tasks",
                 data = {
-                    turtleId = t.id,
-                    tasks = t.tasks,
-                    startDelay = dispatchDelay
+                    turtleId   = turtle.id,
+                    tasks      = {{
+                        type          = taskType,
+                        item          = slot.item,
+                        position      = slot.position,
+                        slotIndex     = i,
+                        altarId       = infusion.altarId,
+                        chestPosition = chestPosition
+                    }},
+                    startDelay = delayTicks or 0
                 }
             })
-            updateTurtleStatus(t.id, "working", "placing items")
-            dispatchDelay = dispatchDelay + 10
+            updateTurtleStatus(turtle.id, "working", taskType)
+            return true
+        end
+    end
+    return false   -- no pending slots left
+end
+
+-- Dispatch one clear task to a turtle from the clear slot list.
+local function dispatchNextClear(infusion, turtle)
+    for i, slot in ipairs(infusion.clearSlots or {}) do
+        if slot.status == "pending" then
+            slot.status   = "dispatched"
+            slot.turtleId = turtle.id
+
+            print("Dispatching clear slot #" .. i .. " to turtle #" .. turtle.id)
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "turtle_tasks",
+                data = {
+                    turtleId = turtle.id,
+                    tasks    = {{
+                        type               = "clear_pedestal",
+                        position           = slot.position,
+                        slotIndex          = i,
+                        altarId            = infusion.altarId,
+                        meInterfacePosition = meInterfacePosition
+                    }}
+                }
+            })
+            updateTurtleStatus(turtle.id, "working", "clearing pedestal")
+            return true
+        end
+    end
+    return false
+end
+
+local function startInfusion(recipeId, recipe, altarIdx)
+    local altar = altars[altarIdx]
+
+    print("=================================")
+    print("Starting infusion: recipe #" .. recipeId .. " altar #" .. altar.id)
+    print("Turtles: " .. #turtles)
+    for i, t in ipairs(turtles) do
+        print("  [" .. i .. "] id=#" .. t.id .. " status=" .. t.status)
+    end
+    print("Pedestals: " .. #altar.pedestals .. "  Ingredients: " .. #recipe.ingredients)
+    print("=================================")
+
+    if not altar.layoutConfirmed then
+        print("ERROR: Altar layout not confirmed!"); return
+    end
+    if not altar.pedestalsScanned or #altar.pedestals == 0 then
+        print("ERROR: Altar pedestals not scanned!"); return
+    end
+
+    altar.busy          = true
+    altar.currentRecipe = recipeId
+
+    -- Build ordered slot list: catalyst first, then ingredients in pedestal order
+    local slots = {}
+
+    -- Catalyst goes on the centre pedestal (one above the catalyst computer)
+    table.insert(slots, {
+        type     = "catalyst",
+        item     = recipe.catalyst,
+        position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
+        status   = "pending",
+        turtleId = nil
+    })
+
+    -- Ingredients map 1:1 to sorted pedestal list
+    for i, ingredient in ipairs(recipe.ingredients) do
+        if i > #altar.pedestals then
+            print("WARNING: More ingredients than pedestals, truncating at " .. #altar.pedestals)
+            break
+        end
+        table.insert(slots, {
+            type     = "ingredient",
+            item     = ingredient,
+            position = altar.pedestals[i],
+            status   = "pending",
+            turtleId = nil
+        })
+    end
+
+    local infusion = {
+        recipeId  = recipeId,
+        altarId   = altar.id,
+        startTime = os.epoch("utc"),
+        status    = "placing_items",
+        slots     = slots,
+    }
+    activeInfusions[altar.id] = infusion
+
+    -- Clear server-side task lists
+    for _, t in ipairs(turtles) do t.tasks = {} end
+
+    -- Dispatch one slot per available turtle, staggered 10 ticks apart
+    local delay = 0
+    for _, t in ipairs(turtles) do
+        if dispatchNextSlot(infusion, t, delay) then
+            delay = delay + 10
         end
     end
 
     broadcast("infusion_started", {
-        recipeId = recipeId,
-        altarId = altar.id,
-        startTime = infusion.startTime
+        recipeId  = recipeId,
+        altarId   = altar.id,
+        startTime = infusion.startTime,
+        slots     = #slots
     })
 end
 
@@ -673,12 +758,12 @@ local function completeInfusion(altarId, resultItem)
     local infusion = activeInfusions[altarId]
     if not infusion then return end
 
-    local recipe = recipes[infusion.recipeId]
+    local recipe   = recipes[infusion.recipeId]
     local duration = (os.epoch("utc") - infusion.startTime) / 1000
 
     recipe.completedCount = recipe.completedCount + 1
-    recipe.totalTime = recipe.totalTime + duration
-    recipe.averageTime = recipe.totalTime / recipe.completedCount
+    recipe.totalTime      = recipe.totalTime + duration
+    recipe.averageTime    = recipe.totalTime / recipe.completedCount
 
     print("Infusion complete! Duration: " .. duration .. "s")
 
@@ -688,51 +773,35 @@ local function completeInfusion(altarId, resultItem)
     end
     if not altar then return end
 
-    -- Clear all turtle task queues before assigning retrieval/clear work
-    for _, t in ipairs(turtles) do
-        t.tasks = {}
-    end
+    -- Build clear slot list: result retrieval first, then all ingredient pedestals
+    local clearSlots = {}
 
-    -- Turtle 1 retrieves the result from the catalyst pedestal (one above the computer)
-    if turtles[1] then
-        table.insert(turtles[1].tasks, {
-            type = "retrieve_result",
-            position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
-            meInterfacePosition = meInterfacePosition
+    table.insert(clearSlots, {
+        type     = "retrieve_result",
+        position = { x = altar.catalyst.x, y = altar.catalyst.y + 1, z = altar.catalyst.z },
+        status   = "pending",
+        turtleId = nil
+    })
+
+    for _, pedestalPos in ipairs(altar.pedestals) do
+        table.insert(clearSlots, {
+            type     = "clear_pedestal",
+            position = pedestalPos,
+            status   = "pending",
+            turtleId = nil
         })
     end
 
-    -- Distribute pedestal clearing round-robin across all turtles
-    local turtleIdx = 1
-    for _, pedestalPos in ipairs(altar.pedestals) do
-        local t = turtles[turtleIdx]
-        if t then
-            table.insert(t.tasks, {
-                type = "clear_pedestal",
-                position = pedestalPos,
-                altarCatalyst = altar.catalyst,
-                meInterfacePosition = meInterfacePosition
-            })
-        end
-        turtleIdx = turtleIdx + 1
-        if turtleIdx > #turtles then turtleIdx = 1 end
-    end
+    infusion.status     = "clearing"
+    infusion.clearSlots = clearSlots
 
-    -- Dispatch with stagger
-    local dispatchDelay = 0
+    -- Clear server-side task lists and dispatch one clear per turtle
+    for _, t in ipairs(turtles) do t.tasks = {} end
+
+    local delay = 0
     for _, t in ipairs(turtles) do
-        if #t.tasks > 0 then
-            print("Dispatching " .. #t.tasks .. " clear task(s) to turtle #" .. t.id)
-            modem.transmit(CHANNEL, CHANNEL, {
-                type = "turtle_tasks",
-                data = {
-                    turtleId = t.id,
-                    tasks = t.tasks,
-                    startDelay = dispatchDelay
-                }
-            })
-            updateTurtleStatus(t.id, "working", "clearing altar")
-            dispatchDelay = dispatchDelay + 10
+        if dispatchNextClear(infusion, t) then
+            delay = delay + 10
         end
     end
 
@@ -827,6 +896,80 @@ local function handleMessage(msg, sender)
 
     elseif msg.type == "add_recipe" then
         addRecipe(msg.data.catalyst, msg.data.ingredients)
+
+    elseif msg.type == "item_placed" then
+        -- Turtle reports it successfully placed an item on a pedestal.
+        -- Mark that slot as placed and dispatch the next pending slot to this turtle.
+        local turtleId = msg.data.turtleId
+        local altarId  = msg.data.altarId
+        local slotIdx  = msg.data.slotIndex
+
+        local infusion = activeInfusions[altarId]
+        if infusion and infusion.slots and slotIdx then
+            local slot = infusion.slots[slotIdx]
+            if slot then
+                slot.status = "placed"
+                print("Slot #" .. slotIdx .. " placed (" .. slot.item.item.name ..
+                      ") by turtle #" .. turtleId)
+            end
+
+            -- Count remaining
+            local pending, placed = 0, 0
+            for _, s in ipairs(infusion.slots) do
+                if s.status == "pending"    then pending = pending + 1 end
+                if s.status == "placed"     then placed  = placed  + 1 end
+            end
+            print("Infusion progress: " .. placed .. "/" .. #infusion.slots .. " placed, " .. pending .. " pending")
+            broadcast("infusion_progress", { altarId = altarId, placed = placed, total = #infusion.slots })
+
+            -- Dispatch the next pending slot to this turtle
+            local t = findTurtle(turtleId)
+            if t and pending > 0 then
+                dispatchNextSlot(infusion, t, 0)
+            elseif t then
+                -- No more slots for this turtle — send it home
+                modem.transmit(CHANNEL, CHANNEL, {
+                    type = "turtle_tasks",
+                    data = { turtleId = turtleId, tasks = {} }
+                })
+                updateTurtleStatus(turtleId, "idle", "waiting")
+            end
+        end
+
+    elseif msg.type == "item_cleared" then
+        -- Turtle reports it cleared a pedestal during post-infusion cleanup.
+        local turtleId = msg.data.turtleId
+        local altarId  = msg.data.altarId
+        local slotIdx  = msg.data.slotIndex
+
+        local infusion = activeInfusions[altarId]
+        if infusion and infusion.clearSlots and slotIdx then
+            local slot = infusion.clearSlots[slotIdx]
+            if slot then slot.status = "cleared" end
+
+            local pending = 0
+            for _, s in ipairs(infusion.clearSlots) do
+                if s.status == "pending" then pending = pending + 1 end
+            end
+
+            local t = findTurtle(turtleId)
+            if t and pending > 0 then
+                dispatchNextClear(infusion, t)
+            else
+                -- All cleared
+                if t then updateTurtleStatus(turtleId, "idle", "waiting") end
+                -- Check if all turtles are done clearing
+                local allCleared = true
+                for _, s in ipairs(infusion.clearSlots) do
+                    if s.status ~= "cleared" then allCleared = false; break end
+                end
+                if allCleared then
+                    print("All pedestals cleared for altar #" .. altarId)
+                    activeInfusions[altarId] = nil
+                    broadcast("altar_cleared", { altarId = altarId })
+                end
+            end
+        end
 
     elseif msg.type == "turtle_task_complete" then
         for _, t in ipairs(turtles) do
