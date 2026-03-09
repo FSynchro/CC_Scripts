@@ -733,10 +733,10 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                 if not reached then
                     log("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
                 elseif block then
-                    -- The pedestal itself is one block below our scan position
+                    -- Pedestal is 1 below scan height (turtle at catalystPos.y+2, pedestal at catalystPos.y+1)
                     local pedestalPos = {
                         x = scanPos.x,
-                        y = scanPos.y - 1,   -- one below scan height = pedestal surface
+                        y = scanPos.y - 1,
                         z = scanPos.z
                     }
                     local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
