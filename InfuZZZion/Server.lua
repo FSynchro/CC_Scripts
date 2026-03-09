@@ -372,19 +372,17 @@ local function handlePedestalScanResults(altarId, pedestalPositions, stabilizerP
                 local dx = pos.x - catalyst.x
                 local dz = pos.z - catalyst.z
                 local dist = math.abs(dx) + math.abs(dz)
-                -- Cardinals: exactly one axis non-zero
-                if dx == 0 and dz ~= 0 then
-                    if dz < 0 then return dist * 100 + 1 end  -- North
-                    if dz > 0 then return dist * 100 + 2 end  -- South
-                elseif dz == 0 and dx ~= 0 then
-                    if dx < 0 then return dist * 100 + 3 end  -- West
-                    if dx > 0 then return dist * 100 + 4 end  -- East
-                -- Diagonals
-                elseif dx > 0 and dz < 0 then return dist * 100 + 5 end  -- NE
-                elseif dx < 0 and dz > 0 then return dist * 100 + 6 end  -- SW
-                elseif dx > 0 and dz > 0 then return dist * 100 + 7 end  -- SE
-                elseif dx < 0 and dz < 0 then return dist * 100 + 8 end  -- NW
-                return dist * 100 + 9
+                -- Flat if/elseif chain — no nested blocks
+                if     dx == 0 and dz  < 0 then return dist * 100 + 1  -- North
+                elseif dx == 0 and dz  > 0 then return dist * 100 + 2  -- South
+                elseif dz == 0 and dx  < 0 then return dist * 100 + 3  -- West
+                elseif dz == 0 and dx  > 0 then return dist * 100 + 4  -- East
+                elseif dx  > 0 and dz  < 0 then return dist * 100 + 5  -- NE
+                elseif dx  < 0 and dz  > 0 then return dist * 100 + 6  -- SW
+                elseif dx  > 0 and dz  > 0 then return dist * 100 + 7  -- SE
+                elseif dx  < 0 and dz  < 0 then return dist * 100 + 8  -- NW
+                else                             return dist * 100 + 9
+                end
             end
             table.sort(altar.pedestals, function(a, b)
                 return pedestalOrder(a, altar.catalyst) < pedestalOrder(b, altar.catalyst)
