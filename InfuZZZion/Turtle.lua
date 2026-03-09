@@ -277,9 +277,10 @@ local function moveTo(target)
                math.abs(pos.x - altarZoneCenter.x) <= ALTAR_ZONE_RADIUS and
                math.abs(pos.z - altarZoneCenter.z) <= ALTAR_ZONE_RADIUS and
                pos.y < altarZoneCenter.y + 2 and
-               pos.y ~= target.y then
-            -- Inside the altar's pedestal zone and not yet at safe transit height.
-            -- Ascend to catalystY+2 before any horizontal movement.
+               target.y >= altarZoneCenter.y + 2 then
+            -- Inside the altar zone, below transit height, and target is also at
+            -- or above transit height — ascend before moving horizontally.
+            -- (Does NOT fire when target.y is the drop position below transit height.)
             if not moveUp() then
                 stuckCount = stuckCount + 1
                 if stuckCount >= 5 then print("ERROR: Stuck ascending into altar zone!") return false end
@@ -1210,6 +1211,18 @@ local function handleMessage(msg)
         if msg.data.turtleId == assignedId then
             tasks = msg.data.tasks
             processTasks()
+        end
+
+    elseif msg.type == "abort_and_return" then
+        if msg.data.turtleId == assignedId then
+            print("ABORT AND RETURN: returning items and going home")
+            tasks = {}
+            updateStatus("returning", "aborting infusion")
+            -- Return any held items to chest before going home
+            if chestPosition then
+                returnItemsToChest(chestPosition)
+            end
+            returnHome()
         end
 
     elseif msg.type == "disaster_abort" then
