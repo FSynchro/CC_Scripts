@@ -21,6 +21,8 @@ local setupComplete = false
 local altarLastSeen = {}
 local turtleLastSeen = {}
 local KEEPALIVE_TIMEOUT = 60000
+local pendingRestartAltarId = nil
+local restartTimer = nil
 
 -- Modem setup
 local modem = peripheral.find("modem")
@@ -77,6 +79,15 @@ local function loadDatabase()
                 print("Restored chest position: " .. textutils.serialize(chestPosition))
                 print("Restored ME position:    " .. textutils.serialize(meInterfacePosition))
             end
+            -- Restore setupComplete: true if all altars are confirmed
+            local allConfirmed = #altars > 0
+            for _, a in ipairs(altars) do
+                if not a.layoutConfirmed then allConfirmed = false break end
+            end
+            if allConfirmed then
+                setupComplete = true
+                print("Setup already complete (" .. #altars .. " altars confirmed)")
+            end
         end
     end
 end
@@ -116,31 +127,47 @@ end
 
 local function checkKeepalives()
     local now = os.epoch("utc")
-    local errors = {}
 
     for _, altar in ipairs(altars) do
         if altarLastSeen[altar.id] then
-            if now - altarLastSeen[altar.id] > KEEPALIVE_TIMEOUT then
-                table.insert(errors, "Altar #" .. altar.id .. " offline!")
-                print("WARNING: Altar #" .. altar.id .. " not responding")
+            local offline = now - altarLastSeen[altar.id] > KEEPALIVE_TIMEOUT
+            if offline ~= altar.offline then
+                altar.offline = offline
+                if offline then
+                    print("WARNING: Altar #" .. altar.id .. " not responding (last seen " ..
+                          math.floor((now - altarLastSeen[altar.id]) / 1000) .. "s ago)")
+                else
+                    print("Altar #" .. altar.id .. " back online")
+                end
             end
         end
     end
 
     for _, t in ipairs(turtles) do
         if turtleLastSeen[t.id] then
-            if now - turtleLastSeen[t.id] > KEEPALIVE_TIMEOUT then
-                table.insert(errors, "Turtle #" .. t.id .. " offline!")
-                print("WARNING: Turtle #" .. t.id .. " not responding")
+            local offline = now - turtleLastSeen[t.id] > KEEPALIVE_TIMEOUT
+            if offline ~= t.offline then
+                t.offline = offline
+                if offline then
+                    print("WARNING: Turtle #" .. t.id .. " not responding (last seen " ..
+                          math.floor((now - turtleLastSeen[t.id]) / 1000) .. "s ago)")
+                else
+                    print("Turtle #" .. t.id .. " back online")
+                end
             end
         end
     end
 
-    if #errors > 0 then
-        errorMode = true
-        errorMessage = table.concat(errors, ", ")
-        broadcast("error_mode", {message = errorMessage})
-    end
+    -- Broadcast updated status so client can show offline indicators
+    broadcast("status_update", {
+        recipes = recipes,
+        turtles = turtles,
+        altars = altars,
+        activeInfusions = activeInfusions,
+        errorMode = errorMode,
+        errorMessage = errorMessage,
+        setupComplete = setupComplete
+    })
 end
 
 -- ============================================================
@@ -757,11 +784,44 @@ local function handleMessage(msg, sender)
     elseif msg.type == "turtle_task_complete" then
         for _, t in ipairs(turtles) do
             if t.id == msg.data.turtleId then
+                turtleLastSeen[t.id] = os.epoch("utc")  -- task_complete proves turtle is alive
+                t.offline = false
                 if #t.tasks > 0 then table.remove(t.tasks, 1) end
                 if #t.tasks == 0 then updateTurtleStatus(t.id, "idle", "waiting") end
                 break
             end
         end
+
+    elseif msg.type == "restart_infusion" then
+        local altarId = msg.data.altarId
+        print("Restart infusion requested for altar #" .. tostring(altarId))
+
+        -- Abort any active infusion on this altar
+        if altarId and activeInfusions[altarId] then
+            activeInfusions[altarId] = nil
+            for _, altar in ipairs(altars) do
+                if altar.id == altarId then
+                    altar.busy = false
+                    altar.currentRecipe = nil
+                    break
+                end
+            end
+        end
+
+        -- Tell all turtles to abort and return items
+        for _, t in ipairs(turtles) do
+            t.tasks = {}
+            modem.transmit(CHANNEL, CHANNEL, {
+                type = "abort_and_return",
+                data = { turtleId = t.id, chestPosition = chestPosition }
+            })
+        end
+
+        -- Schedule a retry after turtles have had time to return
+        pendingRestartAltarId = altarId
+        restartTimer = os.startTimer(15)
+        broadcast("infusion_restarting", { altarId = altarId })
+        print("All turtles told to abort. Will retry infusion in 15s.")
 
     elseif msg.type == "turtle_status_update" then
         updateTurtleStatus(msg.data.turtleId, msg.data.status, msg.data.statusDetail)
@@ -880,6 +940,37 @@ local function main()
             elseif side == keepaliveTimer then
                 checkKeepalives()
                 keepaliveTimer = os.startTimer(10)
+
+            elseif restartTimer and side == restartTimer then
+                restartTimer = nil
+                -- Check all turtles are idle before retrying
+                local allIdle = true
+                for _, t in ipairs(turtles) do
+                    if t.status ~= "idle" then allIdle = false break end
+                end
+                if allIdle and pendingRestartAltarId then
+                    print("All turtles idle, retrying infusion on altar #" .. pendingRestartAltarId)
+                    local recipeId, recipe = findMatchingRecipe()
+                    if recipeId then
+                        for altarIdx, altar in ipairs(altars) do
+                            if altar.id == pendingRestartAltarId and altar.layoutConfirmed and not altar.busy then
+                                startInfusion(recipeId, recipe, altarIdx)
+                                break
+                            end
+                        end
+                    else
+                        print("No matching recipe found for restart, items may be missing from chest")
+                        broadcast("status_update", {
+                            recipes = recipes, turtles = turtles, altars = altars,
+                            activeInfusions = activeInfusions, errorMode = errorMode,
+                            errorMessage = errorMessage, setupComplete = setupComplete
+                        })
+                    end
+                else
+                    print("Turtles still busy after restart wait, extending timer 10s")
+                    restartTimer = os.startTimer(10)
+                end
+                pendingRestartAltarId = nil
             end
         end
     end
