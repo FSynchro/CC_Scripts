@@ -324,6 +324,8 @@ local function moveTo(target)
                 if stuckCount >= 5 then print("ERROR: Stuck going up!") return false end
             else
                 stuckCount = 0
+                stepsSinceGPS = stepsSinceGPS + 1
+                pos = { x = pos.x, y = pos.y + 1, z = pos.z }
             end
 
         elseif altarZoneCenter and
@@ -407,6 +409,8 @@ local function moveTo(target)
                 if stuckCount >= 5 then print("ERROR: Stuck going down!") return false end
             else
                 stuckCount = 0
+                stepsSinceGPS = stepsSinceGPS + 1
+                pos = { x = pos.x, y = pos.y - 1, z = pos.z }
             end
         end
 
