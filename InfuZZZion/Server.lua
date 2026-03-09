@@ -580,7 +580,7 @@ local function startInfusion(recipeId, recipe, altarIdx)
 
     for _, t in ipairs(turtles) do
         if #t.tasks > 0 then
-            modem.transmit(t.computerId, CHANNEL, {
+            modem.transmit(CHANNEL, CHANNEL, {
                 type = "turtle_tasks",
                 data = {turtleId = t.id, tasks = t.tasks}
             })
@@ -630,7 +630,7 @@ local function completeInfusion(altarId, resultItem)
 
         updateTurtleStatus(turtles[1].id, "working", "clearing altar")
 
-        modem.transmit(turtles[1].computerId, CHANNEL, {
+        modem.transmit(CHANNEL, CHANNEL, {
             type = "turtle_tasks",
             data = {turtleId = turtles[1].id, tasks = turtles[1].tasks}
         })
@@ -658,10 +658,13 @@ local function handleMessage(msg, sender)
     if type(msg) ~= "table" or not msg.type then return end
 
     if msg.type == "turtle_register" then
-        registerTurtle(msg.data.computerId or sender, msg.data.position, false, nil)
+        -- Accept both "computerId" and "computerID" (turtle sends capital ID)
+        local cid = msg.data.computerId or msg.data.computerID or sender
+        registerTurtle(cid, msg.data.position, false, nil)
 
     elseif msg.type == "turtle_reregister" then
-        registerTurtle(msg.data.computerId or sender, msg.data.position, true, msg.data.turtleId)
+        local cid = msg.data.computerId or msg.data.computerID or sender
+        registerTurtle(cid, msg.data.position, true, msg.data.turtleId)
 
     elseif msg.type == "altar_register" then
         registerAltar(msg.data.catalystPosition, false, nil)
@@ -737,9 +740,6 @@ local function handleMessage(msg, sender)
     elseif msg.type == "turtle_status_update" then
         updateTurtleStatus(msg.data.turtleId, msg.data.status, msg.data.statusDetail)
 
-    elseif msg.type == "infusion_complete" then
-        completeInfusion(msg.data.altarId, msg.data.resultItem)
-
     elseif msg.type == "request_status" then
         broadcast("status_update", {
             recipes = recipes,
@@ -777,6 +777,14 @@ local function handleMessage(msg, sender)
         if msg.data.altarId then
             altarLastSeen[msg.data.altarId] = os.epoch("utc")
         end
+
+    elseif msg.type == "infusion_complete" then
+        -- Also refresh altar keepalive — the altar is clearly alive if it
+        -- just reported completion
+        if msg.data.altarId then
+            altarLastSeen[msg.data.altarId] = os.epoch("utc")
+        end
+        completeInfusion(msg.data.altarId, msg.data.resultItem)
 
     elseif msg.type == "turtle_keepalive" then
         if msg.data.turtleId then
