@@ -674,8 +674,12 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                     if not doRefuel() then log("WARNING: Could not refuel during scan, continuing") end
                 end
 
+                -- Fresh GPS fix before each cell so flyTo starts from a known-good
+                -- position and mid-travel syncs don't cause axis re-shuffling.
+                getPosition(true)
+
                 -- flyTo handles the transit height automatically (ascend before moving horizontally).
-                -- We scan from one block above the pedestal surface.
+                -- We scan from two blocks above the pedestal surface.
                 local scanPos = {
                     x = catalystPos.x + xOffset,
                     y = catalystPos.y + 2,   -- two above surface so turtle clears pedestal tops
