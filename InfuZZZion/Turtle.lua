@@ -274,28 +274,16 @@ local function moveTo(target)
             local wantFacing = pos.x < target.x and 1 or 3
             turnToFace(wantFacing)
 
-            local before = getPosition(true)
-            if not before then print("ERROR: Lost GPS before X move!") return false end
-
             if moveForward() then
                 stuckCount = 0
-
-                -- Learn actual facing from where GPS says we ended up
-                local after = getPosition(true)
-                if after then
-                    local actualFacing = facingFromMove(before, after)
-                    if actualFacing then
-                        if actualFacing ~= wantFacing then
-                            -- We moved in the wrong horizontal direction.
-                            -- Update facing to reality so turnToFace corrects next iteration.
-                            print("Orientation corrected: was " .. facing .. " actually " .. actualFacing)
-                            facing = actualFacing
-                        else
-                            facing = actualFacing
-                        end
-                    end
-                    pos = after
-                end
+                -- Trust the intended direction; update facing and dead-reckon pos.
+                -- GPS will correct on next loop iteration if we drifted.
+                facing = wantFacing
+                pos = {
+                    x = pos.x + (wantFacing == 1 and 1 or -1),
+                    y = pos.y,
+                    z = pos.z
+                }
             else
                 stuckCount = stuckCount + 1
                 if stuckCount >= 5 then print("ERROR: Stuck on X axis!") return false end
@@ -306,26 +294,15 @@ local function moveTo(target)
             local wantFacing = pos.z < target.z and 2 or 0
             turnToFace(wantFacing)
 
-            local before = getPosition(true)
-            if not before then print("ERROR: Lost GPS before Z move!") return false end
-
             if moveForward() then
                 stuckCount = 0
-
-                -- Learn actual facing from GPS delta
-                local after = getPosition(true)
-                if after then
-                    local actualFacing = facingFromMove(before, after)
-                    if actualFacing then
-                        if actualFacing ~= wantFacing then
-                            print("Orientation corrected: was " .. facing .. " actually " .. actualFacing)
-                            facing = actualFacing
-                        else
-                            facing = actualFacing
-                        end
-                    end
-                    pos = after
-                end
+                -- Trust the intended direction; update facing and dead-reckon pos.
+                facing = wantFacing
+                pos = {
+                    x = pos.x,
+                    y = pos.y,
+                    z = pos.z + (wantFacing == 2 and 1 or -1)
+                }
             else
                 stuckCount = stuckCount + 1
                 if stuckCount >= 5 then print("ERROR: Stuck on Z axis!") return false end
@@ -652,18 +629,24 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                 if not reached then
                     print("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
                 elseif block then
-                    local posKey = targetPos.x .. "," .. targetPos.y .. "," .. targetPos.z
+                    -- The actual pedestal is 2 below the hover position
+                    local pedestalPos = {
+                        x = hoverPos.x,
+                        y = hoverPos.y - 2,
+                        z = hoverPos.z
+                    }
+                    local posKey = pedestalPos.x .. "," .. pedestalPos.y .. "," .. pedestalPos.z
 
                     if blockMatches(block.name, PEDESTAL_PATTERNS) then
                         if not foundPedestals[posKey] then
                             foundPedestals[posKey] = true
-                            table.insert(pedestals, targetPos)
+                            table.insert(pedestals, pedestalPos)
                             print("  PEDESTAL at [" .. xOffset .. "," .. zOffset .. "]")
                         end
                     elseif blockMatches(block.name, STABILIZER_PATTERNS) then
                         if not foundStabilizers[posKey] then
                             foundStabilizers[posKey] = true
-                            table.insert(stabilizers, targetPos)
+                            table.insert(stabilizers, pedestalPos)
                             print("  STABILIZER at [" .. xOffset .. "," .. zOffset .. "]")
                         end
                     end
