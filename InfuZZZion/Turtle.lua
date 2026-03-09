@@ -730,13 +730,28 @@ end
 -- ============================================================
 
 local function pickupItemFromChest(item, chestPos)
-    local chestAbovePos = {
-        x = chestPos.x,
-        y = chestPos.y + 1,
-        z = chestPos.z
-    }
+    -- The chest is at ground level beside the server. We must NOT try to path
+    -- horizontally at ground level — the chest/server block the way.
+    -- Strategy: ascend in place to chest.y+2 first, THEN move X/Z, then drop to chest.y+1.
+    local safeY = chestPos.y + 2
+    local currentPos = getPosition(true)
+    if not currentPos then
+        print("ERROR: Cannot get GPS position before chest approach")
+        return false
+    end
 
-    if not moveTo(chestAbovePos) then
+    -- Step 1: ascend in place to safe height (moveTo with same X,Z = pure Y move)
+    local ascendPos = { x = currentPos.x, y = safeY, z = currentPos.z }
+    if not moveTo(ascendPos) then
+        print("ERROR: Cannot ascend to safe height before chest")
+        return false
+    end
+
+    -- Step 2: move horizontally at safe height to above chest
+    local transitPos = { x = chestPos.x, y = safeY, z = chestPos.z }
+    local chestAbovePos = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
+
+    if not moveTo(transitPos) or not moveTo(chestAbovePos) then
         print("ERROR: Cannot move above chest")
         return false
     end
@@ -814,8 +829,20 @@ local function returnItemsToChest(chestPos)
     if not hasItems then return end
 
     print("Returning stray items to chest...")
-    local chestAbovePos = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
-    if moveTo(chestAbovePos) then
+    -- Ascend in place first, then move horizontally — chest is at ground level
+    -- beside the server and cannot be approached at the same Y.
+    local safeY = chestPos.y + 2
+    local curPos = getPosition(true)
+    local didAscend = false
+    if curPos and curPos.y < safeY then
+        local ascendPos = { x = curPos.x, y = safeY, z = curPos.z }
+        didAscend = moveTo(ascendPos)
+    else
+        didAscend = true
+    end
+    local transitPos     = { x = chestPos.x, y = safeY, z = chestPos.z }
+    local chestAbovePos  = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
+    if didAscend and moveTo(transitPos) and moveTo(chestAbovePos) then
         for slot = 1, 16 do
             local detail = turtle.getItemDetail(slot)
             if detail and not isFuelItem(detail.name) then
@@ -968,16 +995,26 @@ local function executeTask(task)
 
     elseif task.type == "place_catalyst" then
         updateStatus("working", "placing catalyst")
+        local cp = task.chestPosition or chestPosition
+        if not cp then
+            print("ERROR: No chest position for place_catalyst task! Skipping.")
+            return false
+        end
         altarZoneCenter = task.altarCatalyst or task.position
-        local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        local result = placeItemOnPedestal(task.item, task.position, cp)
         altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "place_ingredient" then
         updateStatus("working", "placing ingredient")
+        local cp = task.chestPosition or chestPosition
+        if not cp then
+            print("ERROR: No chest position for place_ingredient task! Skipping.")
+            return false
+        end
         altarZoneCenter = task.altarCatalyst or task.position
-        local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        local result = placeItemOnPedestal(task.item, task.position, cp)
         altarZoneCenter = nil
         returnHome()
         return result
