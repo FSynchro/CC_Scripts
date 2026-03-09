@@ -298,12 +298,16 @@ local function registerTurtle(computerId, position, isReregister, existingId)
         assignedId = turtleId,
     }
 
+    -- Always send serverPosition so turtle can set its no-fly zone
+    if serverPosition then
+        responseData.serverPosition = serverPosition
+    end
+
     if chestPosition then
         responseData.chestPosition = chestPosition
         responseData.meInterfacePosition = meInterfacePosition
         print("Sending known chest/ME positions to turtle #" .. turtleId)
     elseif serverPosition then
-        responseData.serverPosition = serverPosition
         print("Sending serverPosition to turtle #" .. turtleId .. " for chest discovery")
     else
         print("WARNING: No serverPosition or chestPosition available for turtle #" .. turtleId)
