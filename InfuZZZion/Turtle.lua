@@ -313,11 +313,10 @@ local function flyTo(target)
     end
 
     -- Try to step forward one block (no digging — avoids hitting other turtles).
-    -- Updates pos and re-derives facing from GPS delta.
+    -- facing is already correct because turnToFace set it; no re-derivation needed.
     local function stepForward(wantFacing)
         sendKeepalive()
         turnToFace(wantFacing)
-        local before = pos
         if not turtle.forward() then
             local ok, blk = turtle.inspect()
             log("  forward blocked (facing=" .. wantFacing .. "): " .. (ok and blk.name or "air/unknown"))
@@ -325,13 +324,9 @@ local function flyTo(target)
         end
         sleep(MOVE_DELAY)
         stepsSinceGPS = stepsSinceGPS + 1
-        -- Dead-reckon new position
         local dx = (wantFacing == 1) and 1 or (wantFacing == 3) and -1 or 0
         local dz = (wantFacing == 2) and 1 or (wantFacing == 0) and -1 or 0
         pos = { x = pos.x + dx, y = pos.y, z = pos.z + dz }
-        -- Re-derive facing from actual GPS delta once we re-sync
-        local derived = facingFromMove(before, pos)
-        if derived then facing = derived end
         return true
     end
 
