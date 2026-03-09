@@ -255,8 +255,12 @@ local function flyTo(target)
     log("flyTo " .. textutils.serialize(target))
 
     local idleCount     = 0
-    local stuckCount    = 0
     local stepsSinceGPS = 0
+    -- Per-axis stuck counters — never reset by progress on a different axis.
+    local stuckY   = 0
+    local stuckX   = 0
+    local stuckZ   = 0
+    local STUCK_UPLOAD = 3   -- upload log after this many consecutive failures on one axis
     local lastDist = math.abs(target.x - pos.x)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
@@ -358,7 +362,7 @@ local function flyTo(target)
                    + math.abs(target.y - pos.y)
                    + math.abs(target.z - pos.z)
         if dist < lastDist then
-            idleCount = 0; stuckCount = 0; lastDist = dist
+            idleCount = 0; lastDist = dist
         else
             idleCount = idleCount + 1
             if idleCount >= MAX_IDLE then
@@ -372,80 +376,81 @@ local function flyTo(target)
         -- Priority: ascend → X (with no-fly guard) → Z (with no-fly guard) → descend
 
         if pos.y < target.y then
-            -- Must ascend
             if not stepUp() then
-                stuckCount = stuckCount + 1
-                if stuckCount >= 5 then
+                stuckY = stuckY + 1
+                if stuckY >= 5 then
                     log("ERROR: Cannot ascend to target Y!")
                     uploadLog("stuck_up")
                     return false
                 end
             else
-                stuckCount = 0
+                stuckY = 0
             end
 
         elseif pos.x ~= target.x then
-            -- Check no-fly zone: if the next X step puts us over the server column
-            -- at an unsafe height, ascend first.
             local nextX = pos.x + (pos.x < target.x and 1 or -1)
             if serverPosition and SERVER_CLEAR_Y
                and nextX == serverPosition.x and pos.z == serverPosition.z
                and pos.y < SERVER_CLEAR_Y then
                 log("No-fly ahead on X, ascending to Y=" .. SERVER_CLEAR_Y)
                 if not stepUp() then
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then log("ERROR: Stuck ascending for no-fly X!") return false end
-                else stuckCount = 0 end
+                    stuckY = stuckY + 1
+                    if stuckY >= 5 then log("ERROR: Stuck ascending for no-fly X!") return false end
+                else stuckY = 0 end
             else
                 local wantFacing = pos.x < target.x and 1 or 3
                 if stepForward(wantFacing) then
-                    stuckCount = 0
+                    stuckX = 0
                 else
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then
-                        log("ERROR: Stuck on X axis!")
+                    stuckX = stuckX + 1
+                    log("X stuck x" .. stuckX .. " (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target) .. ")")
+                    if stuckX >= STUCK_UPLOAD then
                         uploadLog("stuck_X")
+                    end
+                    if stuckX >= 5 then
+                        log("ERROR: Stuck on X axis!")
                         return false
                     end
                 end
             end
 
         elseif pos.z ~= target.z then
-            -- Check no-fly zone on Z
             local nextZ = pos.z + (pos.z < target.z and 1 or -1)
             if serverPosition and SERVER_CLEAR_Y
                and pos.x == serverPosition.x and nextZ == serverPosition.z
                and pos.y < SERVER_CLEAR_Y then
                 log("No-fly ahead on Z, ascending to Y=" .. SERVER_CLEAR_Y)
                 if not stepUp() then
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then log("ERROR: Stuck ascending for no-fly Z!") return false end
-                else stuckCount = 0 end
+                    stuckY = stuckY + 1
+                    if stuckY >= 5 then log("ERROR: Stuck ascending for no-fly Z!") return false end
+                else stuckY = 0 end
             else
                 local wantFacing = pos.z < target.z and 2 or 0
                 if stepForward(wantFacing) then
-                    stuckCount = 0
+                    stuckZ = 0
                 else
-                    stuckCount = stuckCount + 1
-                    if stuckCount >= 5 then
-                        log("ERROR: Stuck on Z axis!")
+                    stuckZ = stuckZ + 1
+                    log("Z stuck x" .. stuckZ .. " (facing=" .. wantFacing .. " pos=" .. textutils.serialize(pos) .. " target=" .. textutils.serialize(target) .. ")")
+                    if stuckZ >= STUCK_UPLOAD then
                         uploadLog("stuck_Z")
+                    end
+                    if stuckZ >= 5 then
+                        log("ERROR: Stuck on Z axis!")
                         return false
                     end
                 end
             end
 
         elseif pos.y > target.y then
-            -- X and Z correct; now descend
             if not stepDown() then
-                stuckCount = stuckCount + 1
-                if stuckCount >= 5 then
+                stuckY = stuckY + 1
+                if stuckY >= 5 then
                     log("ERROR: Cannot descend to target Y!")
                     uploadLog("stuck_down")
                     return false
                 end
             else
-                stuckCount = 0
+                stuckY = 0
             end
         end
 
