@@ -28,8 +28,10 @@ local computerID = os.getComputerID()
 local assignedId = nil
 local chestPosition = nil
 local meInterfacePosition = nil
-local serverPosition = nil   -- Received from server; used as a no-fly zone
-local SERVER_CLEAR_Y = nil   -- Must be >= this Y to pass over the server column
+local serverPosition = nil       -- Received from server; used as a no-fly zone
+local SERVER_CLEAR_Y = nil       -- Must be >= this Y to pass over the server column
+local altarZoneCenter = nil      -- Catalyst position of active altar; triggers ascent nearby
+local ALTAR_ZONE_RADIUS = 5      -- Ascend when within this many blocks on X or Z
 local facing = 0
 
 if not modem then
@@ -271,6 +273,21 @@ local function moveTo(target)
                 stuckCount = 0
             end
 
+        elseif altarZoneCenter and
+               math.abs(pos.x - altarZoneCenter.x) <= ALTAR_ZONE_RADIUS and
+               math.abs(pos.z - altarZoneCenter.z) <= ALTAR_ZONE_RADIUS and
+               pos.y < altarZoneCenter.y + 2 and
+               pos.y ~= target.y then
+            -- Inside the altar's pedestal zone and not yet at safe transit height.
+            -- Ascend to catalystY+2 before any horizontal movement.
+            if not moveUp() then
+                stuckCount = stuckCount + 1
+                if stuckCount >= 5 then print("ERROR: Stuck ascending into altar zone!") return false end
+            else
+                stuckCount = 0
+                pos = { x = pos.x, y = pos.y + 1, z = pos.z }
+            end
+
         elseif pos.x ~= target.x then
             -- Before moving on X, check if the next X position is the server's X
             -- column while we're at an unsafe Y — if so, ascend first.
@@ -508,6 +525,26 @@ local function returnHome()
 
     print("Home!")
     saveId()
+
+    -- Check for any stray non-fuel items and return them to the chest
+    if chestPosition then
+        local hasStray = false
+        for slot = 1, 16 do
+            local detail = turtle.getItemDetail(slot)
+            if detail and not isFuelItem(detail.name) then
+                hasStray = true
+                break
+            end
+        end
+        if hasStray then
+            print("Found stray items at home, returning to chest...")
+            returnItemsToChest(chestPosition)
+            -- Come back home after depositing
+            moveTo(homePosition)
+            print("Home again after returning items!")
+        end
+    end
+
     updateStatus("idle", "waiting")
     sendKeepalive()
     return true
@@ -764,6 +801,35 @@ local function pickupItemFromChest(item, chestPos)
     return true
 end
 
+-- Return all non-fuel items in inventory to the chest, then go home.
+local function returnItemsToChest(chestPos)
+    local hasItems = false
+    for slot = 1, 16 do
+        local detail = turtle.getItemDetail(slot)
+        if detail and not isFuelItem(detail.name) then
+            hasItems = true
+            break
+        end
+    end
+    if not hasItems then return end
+
+    print("Returning stray items to chest...")
+    local chestAbovePos = { x = chestPos.x, y = chestPos.y + 1, z = chestPos.z }
+    if moveTo(chestAbovePos) then
+        for slot = 1, 16 do
+            local detail = turtle.getItemDetail(slot)
+            if detail and not isFuelItem(detail.name) then
+                turtle.select(slot)
+                turtle.dropDown(turtle.getItemCount(slot))
+                print("Returned " .. detail.name .. " from slot " .. slot)
+            end
+        end
+        turtle.select(1)
+    else
+        print("ERROR: Could not reach chest to return items!")
+    end
+end
+
 local function placeItemOnPedestal(item, position, chestPos)
     print("Placing " .. item.item.name .. " on pedestal at " .. textutils.serialize(position))
     updateStatus("working", "picking up item")
@@ -774,20 +840,20 @@ local function placeItemOnPedestal(item, position, chestPos)
 
     updateStatus("working", "placing on pedestal")
 
-    local pedestalAbovePos = {
-        x = position.x,
-        y = position.y + 1,
-        z = position.z
-    }
+    -- Transit at y+2 to clear other pedestals, then drop to y+1 to place.
+    local transitPos = { x = position.x, y = position.y + 2, z = position.z }
+    local dropPos    = { x = position.x, y = position.y + 1, z = position.z }
 
-    if not moveTo(pedestalAbovePos) then
-        print("ERROR: Cannot move to pedestal")
+    if not moveTo(transitPos) or not moveTo(dropPos) then
+        print("ERROR: Cannot move to pedestal, returning item to chest")
+        returnItemsToChest(chestPos)
         return false
     end
 
     turtle.select(1)
     if not turtle.dropDown(1) then
-        print("ERROR: Cannot drop item onto pedestal")
+        print("ERROR: Cannot drop item onto pedestal, returning item to chest")
+        returnItemsToChest(chestPos)
         return false
     end
 
@@ -902,25 +968,33 @@ local function executeTask(task)
 
     elseif task.type == "place_catalyst" then
         updateStatus("working", "placing catalyst")
+        altarZoneCenter = task.altarCatalyst or task.position
         local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "place_ingredient" then
         updateStatus("working", "placing ingredient")
+        altarZoneCenter = task.altarCatalyst or task.position
         local result = placeItemOnPedestal(task.item, task.position, task.chestPosition)
+        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "retrieve_result" then
         updateStatus("working", "retrieving result")
+        altarZoneCenter = task.position
         local result = retrieveItemFromPedestal(task.position, task.meInterfacePosition)
+        altarZoneCenter = nil
         returnHome()
         return result
 
     elseif task.type == "clear_pedestal" then
         updateStatus("working", "clearing pedestal")
+        altarZoneCenter = task.altarCatalyst or task.position
         local result = clearPedestal(task.position, task.meInterfacePosition)
+        altarZoneCenter = nil
         returnHome()
         return result
     end
