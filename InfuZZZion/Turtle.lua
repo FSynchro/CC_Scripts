@@ -137,25 +137,8 @@ local function isCellOccupiedByPeer(cell)
     return false
 end
 
--- Non-blocking check for incoming peer keepalives (drains modem buffer quickly).
-local function pollPeerPositions()
-    local deadline = os.epoch("utc") + 50  -- spend at most 50ms polling
-    while os.epoch("utc") < deadline do
-        local event, side, ch, _, msg = os.pullEventRaw("modem_message")
-        if event ~= "modem_message" then break end
-        if ch == CHANNEL and type(msg) == "table" and msg.type == "turtle_keepalive" then
-            local d = msg.data
-            if d and d.turtleId and d.turtleId ~= assignedId and d.position then
-                peerPositions[d.turtleId] = {
-                    x = d.position.x,
-                    y = d.position.y,
-                    z = d.position.z,
-                    time = os.epoch("utc")
-                }
-            end
-        end
-    end
-end
+-- Peer positions are updated passively by handleMessage when turtle_keepalive
+-- messages arrive in the main event loop. No active polling needed during moves.
 
 local function sendKeepalive()
     if assignedId then
@@ -194,10 +177,9 @@ local function turnToFace(targetFacing)
     end
 end
 
--- Broadcast our position and drain any incoming peer keepalives before a move.
+-- Broadcast our position before each move so peers know where we are.
 local function preMove()
     sendKeepalive()
-    pollPeerPositions()
 end
 
 -- Compute the cell directly in front given current facing.
@@ -211,22 +193,7 @@ end
 
 local function moveForward()
     preMove()
-    -- If a peer occupies the cell ahead, wait up to ~2s before trying.
-    local pos = getPosition(false)  -- cached, no GPS call
-    if pos then
-        local ahead = cellAhead(pos, facing)
-        local waited = 0
-        while waited < 4 do
-            local occ, tid = isCellOccupiedByPeer(ahead)
-            if not occ then break end
-            print("  Waiting: turtle #" .. tid .. " is in the way")
-            sleep(0.5)
-            pollPeerPositions()
-            waited = waited + 1
-        end
-    end
     if not turtle.forward() then
-        -- Don't dig — could be another turtle. Just report failure.
         return false
     end
     sleep(MOVE_DELAY)
@@ -235,21 +202,8 @@ end
 
 local function moveUp()
     preMove()
-    local pos = getPosition(false)
-    if pos then
-        local above = { x=pos.x, y=pos.y+1, z=pos.z }
-        local waited = 0
-        while waited < 4 do
-            local occ, tid = isCellOccupiedByPeer(above)
-            if not occ then break end
-            print("  Waiting: turtle #" .. tid .. " is above")
-            sleep(0.5)
-            pollPeerPositions()
-            waited = waited + 1
-        end
-    end
     if not turtle.up() then
-        turtle.digUp()  -- still dig blocks (not turtles) above
+        turtle.digUp()
         sleep(0.2)
         if not turtle.up() then return false end
     end
