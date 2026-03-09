@@ -614,7 +614,7 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
     if startPos then
         local dxStart = math.abs(startPos.x - catalystPos.x)
         local dzStart = math.abs(startPos.z - catalystPos.z)
-        if dxStart <= 5 or dzStart <= 5 then
+        if dxStart <= 5 and dzStart <= 5 then
             print("Within altar range, ascending to clear pedestals...")
             moveTo({ x = startPos.x, y = catalystPos.y + 2, z = startPos.z })
         end
@@ -633,16 +633,21 @@ local function scanPedestalsAroundCatalyst(catalystPos, assignedRows)
                     end
                 end
 
-                -- The block we want to inspect sits at catalystPos.y
-                local targetPos = {
+                -- Hover 2 above the pedestal level to clear the pedestal tops,
+                -- then inspect down onto the pedestal surface (catalystPos.y).
+                local hoverPos = {
                     x = catalystPos.x + xOffset,
-                    y = catalystPos.y,
+                    y = catalystPos.y + 2,
                     z = catalystPos.z + zOffset
                 }
 
-                -- inspectBelow returns (reached, block). reached=false means
-                -- moveTo genuinely failed; we warn and continue — never skip.
-                local reached, block = inspectBelow(targetPos)
+                local reached = moveTo(hoverPos)
+                local block = nil
+                if reached then
+                    sleep(SCAN_DELAY)
+                    local ok, b = turtle.inspectDown()
+                    if ok and b and b.name then block = b end
+                end
 
                 if not reached then
                     print("  WARNING: Could not reach [" .. xOffset .. "," .. zOffset .. "], continuing scan")
